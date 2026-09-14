@@ -24,10 +24,14 @@ function createSession(tabId, wsUrl, settings) {
     tabId,
     wsUrl,
     settings,
+    snapshot: sanitizeCaptureSnapshot(settings),
+    browserTranslation: settings?.browserTranslation || null,
     mediaStream: null,
     mediaRecorder: null,
     ws: null,
     running: false,
+    status: "Idle",
+    phase: "idle",
     keepAliveTimer: null,
     wsPingTimer: null,
     flushTimer: null,
@@ -39,20 +43,165 @@ function createSession(tabId, wsUrl, settings) {
     monitorGain: null,
     closing: false,
     disconnectHandled: false,
+    translationCache: new Map(),
+    translationTokens: new Map(),
   };
+}
+
+function sanitizeCaptureSnapshot(settings) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const translation = source.translation && typeof source.translation === "object" ? source.translation : {};
+  const selection = translation.selection && typeof translation.selection === "object"
+    ? { kind: String(translation.selection.kind || ""), ...(translation.selection.id ? { id: String(translation.selection.id) } : {}) }
+    : undefined;
+  const stt = source.stt && typeof source.stt === "object"
+    ? { ...(source.stt.model ? { model: String(source.stt.model) } : {}), ...(source.stt.backend ? { backend: String(source.stt.backend) } : {}) }
+    : undefined;
+  return {
+    version: Number(source.version || 2),
+    ...(["local", "profile", "none"].includes(selection?.kind) ? { selection } : {}),
+    ...(translation.target_language ? { target_language: String(translation.target_language) } : {}),
+    ...(typeof translation.partial === "boolean" ? { partial: translation.partial } : {}),
+    ...(stt ? { stt } : {}),
+  };
+}
+
+function sanitizeResolvedSnapshot(snapshot, fallback) {
+  const source = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const result = { ...(fallback || {}) };
+  const translation = source.translation && typeof source.translation === "object" ? source.translation : source;
+  const selectionSource = translation.selection && typeof translation.selection === "object" ? translation.selection : source.selection;
+  const selection = selectionSource && typeof selectionSource === "object"
+    ? { kind: String(selectionSource.kind || ""), ...(selectionSource.id ? { id: String(selectionSource.id) } : {}) }
+    : undefined;
+  if (["local", "profile", "none"].includes(selection?.kind)) result.selection = selection;
+  if (translation.target_language) result.target_language = String(translation.target_language);
+  if (typeof translation.partial === "boolean") result.partial = translation.partial;
+  if (source.stt && typeof source.stt === "object") {
+    result.stt = {
+      ...(source.stt.model ? { model: String(source.stt.model) } : {}),
+      ...(source.stt.backend ? { backend: String(source.stt.backend) } : {}),
+    };
+  }
+  if (source.name) result.name = String(source.name);
+  if (Number.isFinite(Number(source.captures))) result.captures = Number(source.captures);
+  return result;
 }
 
 function isSessionActive(session) {
   return sessions.get(session.tabId) === session;
 }
 
-function notifyBackground(tabId, status, runningOverride) {
+function notifyBackground(tabId, status, runningOverride, retryable = true, extra = {}) {
+  const session = sessions.get(normalizeTabId(tabId));
+  if (session) {
+    session.status = status || session.status;
+    session.phase = extra.phase || classifyPhase(status);
+  }
   chrome.runtime.sendMessage({
     type: "offscreen-state",
     tabId,
     status,
+    phase: extra.phase || classifyPhase(status),
+    snapshot: extra.snapshot || session?.snapshot || null,
+    retryable,
     running: typeof runningOverride === "boolean" ? runningOverride : false,
   });
+}
+
+function classifyPhase(status) {
+  const value = String(status || "").trim().toLowerCase();
+  if (!value) return "idle";
+  if (value.includes("starting") || value.includes("prepar")) return "starting";
+  if (value.includes("connect")) return "connecting";
+  if (value.includes("stopp")) return "stopping";
+  if (value.includes("error") || value.includes("fail") || value.includes("disconnect")) return "error";
+  if (value.includes("captur") || value.includes("ready")) return "capturing";
+  return "status";
+}
+
+function buildBackendConfig(settings) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const payload = { type: "config", version: Number(source.version || 2) };
+  if (source.translation && typeof source.translation === "object") payload.translation = source.translation;
+  if (source.stt && typeof source.stt === "object") payload.stt = source.stt;
+  return payload;
+}
+
+function forwardPayload(session, payload) {
+  chrome.runtime.sendMessage(
+    { type: "offscreen-subtitle", tabId: session.tabId, payload },
+    () => {}
+  );
+}
+
+function getTranslationCacheKey(session, payload) {
+  const cfg = session.browserTranslation || {};
+  const openaiCfg = cfg.openai || {};
+  return JSON.stringify([
+    openaiCfg.base_url || openaiCfg.api_url || "",
+    openaiCfg.model || "",
+    cfg.target_language || "",
+    payload.language || "",
+    payload.original || "",
+  ]);
+}
+
+async function translateSubtitleInBrowser(session, payload) {
+  if (!session.browserTranslation || !globalThis.STTTranslationClient) {
+    return;
+  }
+  if (!payload?.original) {
+    return;
+  }
+  const shouldTranslatePartial = Boolean(session.browserTranslation.partial);
+  if (!payload.final && !shouldTranslatePartial) {
+    return;
+  }
+
+  const cacheKey = getTranslationCacheKey(session, payload);
+  if (session.translationCache.has(cacheKey)) {
+    const translated = session.translationCache.get(cacheKey);
+    if (translated) {
+      forwardPayload(session, { ...payload, translated });
+    }
+    return;
+  }
+
+  const token = Symbol(String(payload.seq ?? "subtitle"));
+  const seqKey = String(payload.seq ?? "subtitle");
+  session.translationTokens.set(seqKey, token);
+  try {
+    const translated = await globalThis.STTTranslationClient.translate(
+      session.browserTranslation,
+      payload.original,
+      payload.language || "auto"
+    );
+    if (!isSessionActive(session)) return;
+    if (session.translationTokens.get(seqKey) !== token) return;
+    if (!translated) return;
+    session.translationCache.set(cacheKey, translated);
+    if (session.translationCache.size > 256) {
+      const oldestKey = session.translationCache.keys().next().value;
+      if (oldestKey) {
+        session.translationCache.delete(oldestKey);
+      }
+    }
+    forwardPayload(session, { ...payload, translated });
+  } catch (err) {
+    if (!isSessionActive(session)) return;
+    const label = globalThis.STTTranslationClient.describeConfig(
+      session.browserTranslation
+    );
+    forwardPayload(session, {
+      type: "error",
+      message: `Browser translation failed: ${label} :: ${err?.message || err}`,
+    });
+  } finally {
+    if (session.translationTokens.get(seqKey) === token) {
+      session.translationTokens.delete(seqKey);
+    }
+  }
 }
 
 function startKeepAlive(session) {
@@ -159,7 +308,7 @@ async function startCapture(tabId, streamId, wsUrl, settings) {
   session.running = true;
   session.closing = false;
   session.disconnectHandled = false;
-  notifyBackground(tabId, "Starting...", true);
+  notifyBackground(tabId, "Starting...", true, true, { phase: "starting", snapshot: session.snapshot });
   startKeepAlive(session);
   session.pendingChunks = [];
   session.pendingBytes = 0;
@@ -170,16 +319,9 @@ async function startCapture(tabId, streamId, wsUrl, settings) {
     session.ws.binaryType = "arraybuffer";
     session.ws.addEventListener("open", () => {
       if (!isSessionActive(session)) return;
-      notifyBackground(tabId, "Connected", true);
+      notifyBackground(tabId, "Connected", true, true, { phase: "connecting", snapshot: session.snapshot });
       if (settings && (settings.translation || settings.stt)) {
-        const payload = { type: "config" };
-        if (settings.translation) {
-          payload.translation = settings.translation;
-        }
-        if (settings.stt) {
-          payload.stt = settings.stt;
-        }
-        session.ws.send(JSON.stringify(payload));
+        session.ws.send(JSON.stringify(buildBackendConfig(settings)));
       }
       flushPendingChunks(session);
     });
@@ -190,11 +332,30 @@ async function startCapture(tabId, streamId, wsUrl, settings) {
       }
       try {
         const payload = JSON.parse(event.data);
-        if (payload.type === "subtitle" || payload.type === "status" || payload.type === "error") {
-          chrome.runtime.sendMessage(
-            { type: "offscreen-subtitle", tabId: session.tabId, payload },
-            () => {}
+        if (payload.snapshot || payload.capture_snapshot || payload.active) {
+          session.snapshot = sanitizeResolvedSnapshot(
+            payload.snapshot || payload.capture_snapshot || payload.active,
+            session.snapshot
           );
+        }
+        if (payload.type === "subtitle") {
+          forwardPayload(session, payload);
+          if (payload.phase || payload.status) {
+            notifyBackground(tabId, payload.message || payload.phase || "Status", true, true, { phase: payload.phase, snapshot: session.snapshot });
+          }
+          if (session.browserTranslation) {
+            translateSubtitleInBrowser(session, payload);
+          }
+        } else if (payload.type === "status" || payload.type === "error") {
+          if (payload.type === "error") {
+            session.lastError = payload.message;
+            forwardPayload(session, payload);
+            notifyBackground(tabId, payload.message || "Backend error", false, false, { phase: payload.phase || "error", snapshot: session.snapshot });
+          } else {
+            const phase = payload.phase || classifyPhase(payload.message);
+            forwardPayload(session, payload);
+            notifyBackground(tabId, payload.message || "Status", !["error", "failed", "stopping", "stopped", "idle"].includes(phase), true, { phase, snapshot: session.snapshot });
+          }
         }
       } catch (err) {
         console.error("[offscreen] JSON parse error:", err.message);
@@ -202,7 +363,8 @@ async function startCapture(tabId, streamId, wsUrl, settings) {
     });
     session.ws.addEventListener("close", (event) => {
       if (!isSessionActive(session)) return;
-      handleWsDisconnect(session, `Disconnected (${event.code || 0})`);
+      const retryable = event.code !== 1008;
+      handleWsDisconnect(session, session.lastError || `Disconnected (${event.code || 0})`, retryable);
     });
     session.ws.addEventListener("error", () => {
       if (!isSessionActive(session)) return;
@@ -332,11 +494,11 @@ async function cleanupCaptureResources(session, options = {}) {
   stopKeepAlive(session);
 }
 
-function handleWsDisconnect(session, message) {
+function handleWsDisconnect(session, message, retryable = true) {
   if (session.closing || session.disconnectHandled) return;
   session.disconnectHandled = true;
   session.running = false;
-  notifyBackground(session.tabId, message, false);
+  notifyBackground(session.tabId, message, false, retryable);
   if (session.ws && session.ws.readyState === WebSocket.OPEN) {
     try {
       session.ws.close();
@@ -399,9 +561,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({
       ok: true,
       running,
-      status: running ? "Capturing" : "Idle",
+      status: session?.status || (running ? "Capturing" : "Idle"),
+      phase: session?.phase || (running ? "capturing" : "idle"),
+      snapshot: session?.snapshot || null,
       wsReadyState: session?.ws ? session.ws.readyState : null,
       anyRunning,
+      occupancy: Array.from(sessions.values()).filter((item) => item.running).map((item) => ({ tabId: item.tabId, snapshot: item.snapshot })),
     });
     return true;
   }

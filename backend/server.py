@@ -4,14 +4,19 @@ import logging
 import inspect
 import ipaddress
 import json
+import os
 import re
+import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 
 from whisperlivekit import AudioProcessor, TranscriptionEngine
 
@@ -44,15 +49,28 @@ def _patch_whisperlivekit_asrtoken() -> None:
 try:
     from . import model_manager
     from .cache import LRUCache
-    from .config import load_config
-    from .translator import build_translator
+    from .config_store import (
+        RevisionConflictError,
+        import_profiles,
+        load_snapshot,
+        server_id_for_config,
+    )
+    from .config import load_config, _default_app_dir
+    from .translation_service import TranslationService
+    from .translation_scheduler import TranslationScheduler
+    from .translator import build_translator, describe_translation_target
 except ImportError:  # Fallback when running as a script.
     import model_manager
     from cache import LRUCache
-    from config import load_config
-    from translator import build_translator
+    from config_store import RevisionConflictError, import_profiles, load_snapshot, server_id_for_config
+    from config import load_config, _default_app_dir
+    from translation_service import TranslationService
+    from translation_scheduler import TranslationScheduler
+    from translator import build_translator, describe_translation_target
 
 _patch_whisperlivekit_asrtoken()
+
+_STT_ENGINE_BUILD_LOCK = threading.Lock()
 
 
 def _get_server_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -61,6 +79,30 @@ def _get_server_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "host": str(server_cfg.get("host", "127.0.0.1")),
         "port": int(server_cfg.get("port", 8765)),
     }
+
+
+def _configured_path() -> Path:
+    configured = os.getenv("STT_CONFIG_PATH")
+    return Path(configured).expanduser() if configured else Path(__file__).with_name("config.yaml")
+
+
+def _trusted_profile_import_origin(websocket: WebSocket) -> bool:
+    """Allow writes from the local app or an extension origin only.
+
+    A normal web page can also open a socket to loopback, so checking the
+    remote address alone is not sufficient for a profile migration write.
+    Native GUI clients generally omit Origin; browser extensions use their
+    ``chrome-extension://``/``moz-extension://`` scheme.
+    """
+
+    origin = str(websocket.headers.get("origin") or "").strip().lower()
+    if not origin:
+        return True
+    return origin.startswith("chrome-extension://") or origin.startswith("moz-extension://")
+
+
+MAX_PROFILE_IMPORT_BYTES = 512 * 1024
+MAX_PROFILE_IMPORT_ITEMS = 256
 
 
 def _merge_config(base: Dict[str, Any], update: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -93,7 +135,6 @@ _ALLOWED_STT_UPDATE_KEYS = {
     "stall_check_interval_sec",
 }
 
-
 def _normalize_stt_update(stt_update: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not stt_update or not isinstance(stt_update, dict):
         return {}
@@ -102,6 +143,49 @@ def _normalize_stt_update(stt_update: Optional[Dict[str, Any]]) -> Dict[str, Any
         # Ensure explicit model selection does not keep a stale model_path.
         normalized["model_path"] = None
     return normalized
+
+
+def _validate_v2_stt_selection(
+    stt_cfg: Dict[str, Any],
+    config: Optional[Dict[str, Any]] = None,
+    revision: Optional[int] = None,
+) -> None:
+    """Reject unavailable v2 speech selections before capture starts.
+
+    Legacy config messages intentionally retain the historical lazy-download
+    behavior.  Only an explicit capture ``version: 2`` opts into the catalog
+    availability contract, preventing a browser selection from triggering an
+    unexpected model download.
+    """
+
+    model_id = str(stt_cfg.get("model") or "").strip()
+    if not model_id:
+        return
+    backend = str(stt_cfg.get("backend") or "").strip()
+    catalog = app.state.translation_service.desktop_catalog(
+        server_id=app.state.server_id,
+        instance_id=app.state.instance_id,
+        config_override=config,
+        revision_override=revision,
+    )
+    selected = None
+    for item in catalog.get("stt_models", []):
+        selection = item.get("selection") if isinstance(item, dict) else None
+        if not isinstance(selection, dict) or str(selection.get("model") or "") != model_id:
+            continue
+        item_backend = str(selection.get("backend") or "")
+        # Standard Whisper model IDs can be served by several established
+        # backends, so the catalog leaves that backend open.
+        if backend and backend != "auto":
+            if item_backend and backend != item_backend:
+                continue
+        selected = item
+        break
+    if selected is None:
+        raise ValueError("Selected STT model is not in the desktop catalog. Refresh the desktop app.")
+    if selected.get("available") is not True:
+        reason = str(selected.get("reason") or "Model files are not installed.")
+        raise ValueError(f"Selected STT model is unavailable: {reason}")
 
 
 async def _ensure_model_available(
@@ -166,6 +250,95 @@ def _build_engine_kwargs(stt_cfg: Dict[str, Any]) -> Dict[str, Any]:
         "lora_path": stt_cfg.get("lora_path"),
         "target_language": "",
     }
+
+
+async def _close_stt_engine(engine: Any) -> None:
+    """Best-effort cleanup for an engine built after its client disconnected."""
+
+    if engine is None:
+        return
+    candidates = [engine, getattr(engine, "asr", None)]
+    seen: set[int] = set()
+    for candidate in candidates:
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        for method_name in ("aclose", "close", "shutdown", "cleanup"):
+            method = getattr(candidate, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                result = await asyncio.to_thread(method)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.debug("Late STT engine cleanup failed", exc_info=True)
+            break
+
+
+def _dispose_stt_task_result(task: asyncio.Task) -> None:
+    if getattr(task, "_stt_cleanup_scheduled", False):
+        return
+    setattr(task, "_stt_cleanup_scheduled", True)
+    if task.cancelled():
+        return
+    try:
+        engine = task.result()
+    except Exception:
+        return
+    asyncio.create_task(_close_stt_engine(engine))
+
+
+def _watch_stt_task_for_cleanup(task: asyncio.Task) -> None:
+    if getattr(task, "_stt_cleanup_watched", False):
+        return
+    setattr(task, "_stt_cleanup_watched", True)
+    task.add_done_callback(_dispose_stt_task_result)
+
+
+async def _construct_stt_engine(engine_kwargs: Dict[str, Any]):
+    """Construct the synchronous Whisper engine without blocking the loop.
+
+    Python cannot interrupt a worker thread running model initialization.  If
+    the caller is cancelled, leave that worker task attached to a cleanup
+    callback so a late-created engine is closed instead of becoming detached.
+    """
+
+    def build() -> Any:
+        # whisperlivekit currently exposes a process-wide singleton engine;
+        # retain the old serialized construction behavior after moving the
+        # blocking initialization away from the asyncio event loop.
+        with _STT_ENGINE_BUILD_LOCK:
+            engine_type = TranscriptionEngine
+            has_singleton_state = hasattr(engine_type, "_instance") or hasattr(
+                engine_type, "_initialized"
+            )
+            if not has_singleton_state:
+                return engine_type(**engine_kwargs)
+            missing = object()
+            previous_instance = getattr(engine_type, "_instance", missing)
+            previous_initialized = getattr(engine_type, "_initialized", missing)
+            try:
+                # The installed whisperlivekit class uses these two fields in
+                # __new__/__init__. Reset only this adapter-owned boundary so
+                # each capture's selected model gets an independent engine;
+                # existing sessions retain their object references.
+                engine_type._instance = None
+                engine_type._initialized = False
+                return engine_type(**engine_kwargs)
+            except BaseException:
+                if previous_instance is not missing:
+                    engine_type._instance = previous_instance
+                if previous_initialized is not missing:
+                    engine_type._initialized = previous_initialized
+                raise
+
+    worker = asyncio.create_task(asyncio.to_thread(build))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        _watch_stt_task_for_cleanup(worker)
+        raise
 
 
 async def _close_results_generator(results_generator) -> None:
@@ -415,14 +588,27 @@ def _is_local_client(websocket: WebSocket) -> bool:
         return host == "localhost"
 
 
-async def _resolve_translator(cache: LRUCache[str, Any], cfg: Dict[str, Any]):
+async def _resolve_translator(
+    cache: LRUCache[str, Any],
+    cfg: Dict[str, Any],
+    http_client: httpx.AsyncClient,
+    build_lock: asyncio.Lock,
+):
     key = _translation_cache_key(cfg)
     cached, hit = cache.get(key)
     if hit:
         return cached
-    translator = await asyncio.to_thread(build_translator, cfg)
-    cache.set(key, translator)
-    return translator
+    async with build_lock:
+        # Recheck after waiting so simultaneous sessions never initialize the
+        # same local model more than once.
+        cached, hit = cache.get(key)
+        if hit:
+            return cached
+        translator = await asyncio.to_thread(build_translator, cfg, http_client)
+        evicted = cache.set(key, translator)
+        if evicted is not None and hasattr(evicted, "aclose"):
+            await evicted.aclose()
+        return translator
 
 
 @dataclass
@@ -440,11 +626,14 @@ class TranslationSession:
         cfg: Dict[str, Any],
         default_lang: Optional[str],
         translator,
+        scheduler: TranslationScheduler,
         subtitle_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.default_lang = default_lang
         self.cfg = dict(cfg)
         self.translator = translator
+        self.scheduler = scheduler
+        self.session_id = uuid.uuid4().hex
         self.translate_partials = bool(self.cfg.get("partial", False))
         subtitle_cfg = subtitle_cfg or {}
         self.max_chars = _normalize_positive_int(
@@ -462,6 +651,8 @@ class TranslationSession:
         self.seq = 0
         self.pending_seq: Optional[int] = None
         self.translation_task: Optional[asyncio.Task[None]] = None
+        self.retired_translation_tasks: set[asyncio.Task[None]] = set()
+        self.background_provider_tasks: set[asyncio.Task[str]] = set()
         self.debounce_ms = _normalize_delay_ms(
             self.cfg.get("debounce_ms"), DEFAULT_TRANSLATION_DEBOUNCE_MS
         )
@@ -511,6 +702,43 @@ async def _safe_send(websocket: WebSocket, payload: Dict[str, Any]) -> bool:
         return False
 
 
+def _capture_snapshot(stt_cfg: Dict[str, Any], translation_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    stt = {"model": str(stt_cfg.get("model") or "medium")}
+    if stt_cfg.get("backend"):
+        stt["backend"] = str(stt_cfg["backend"])
+    translation: Dict[str, Any] = {
+        "target_language": str(translation_cfg.get("target_language") or "zh-TW"),
+        "partial": bool(translation_cfg.get("partial", False)),
+    }
+    selection = translation_cfg.get("selection")
+    if isinstance(selection, dict) and selection.get("kind") and selection.get("id"):
+        translation["selection"] = {
+            "kind": str(selection["kind"]),
+            "id": str(selection["id"]),
+        }
+    elif translation_cfg.get("profile_id"):
+        translation["selection"] = {"kind": "profile", "id": str(translation_cfg["profile_id"])}
+    return {"stt": stt, "translation": translation}
+
+
+async def _send_capture_status(
+    websocket: WebSocket,
+    phase: str,
+    message: str,
+    stt_cfg: Dict[str, Any],
+    translation_cfg: Dict[str, Any],
+) -> bool:
+    return await _safe_send(
+        websocket,
+        {
+            "type": "status",
+            "phase": phase,
+            "message": message,
+            "snapshot": _capture_snapshot(stt_cfg, translation_cfg),
+        },
+    )
+
+
 async def _send_subtitle(
     websocket: WebSocket,
     text: str,
@@ -547,6 +775,31 @@ def _should_refresh_engine(current: Dict[str, Any], updated: Dict[str, Any]) -> 
     return current != updated
 
 
+def _track_background_provider_task(
+    session: TranslationSession, task: asyncio.Task[str]
+) -> None:
+    if task.done():
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("Background translation provider failed", exc_info=True)
+        return
+    session.background_provider_tasks.add(task)
+
+    def _consume(done: asyncio.Task[str]) -> None:
+        session.background_provider_tasks.discard(done)
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("Background translation provider failed", exc_info=True)
+
+    task.add_done_callback(_consume)
+
+
 async def _translate_text(
     session: TranslationSession,
     text: str,
@@ -554,10 +807,34 @@ async def _translate_text(
     websocket: WebSocket,
 ) -> str:
     translation_timeout = _normalize_timeout(session.cfg.get("timeout_sec"), 8.0)
+    operation = session.scheduler.translate(session.translator, text, language)
+    if not bool(getattr(session.translator, "cancellation_safe", False)):
+        # Cancelling asyncio.to_thread does not stop local model inference. Keep
+        # its scheduler slot until the worker thread really finishes.
+        provider_task = asyncio.create_task(operation)
+        try:
+            if translation_timeout > 0:
+                return await asyncio.wait_for(
+                    asyncio.shield(provider_task), timeout=translation_timeout
+                )
+            return await asyncio.shield(provider_task)
+        except asyncio.TimeoutError:
+            _track_background_provider_task(session, provider_task)
+            return ""
+        except asyncio.CancelledError:
+            _track_background_provider_task(session, provider_task)
+            raise
+        except Exception as exc:
+            await _safe_send(
+                websocket,
+                {"type": "error", "message": f"Translation error: {type(exc).__name__}"},
+            )
+            return ""
+
     if translation_timeout > 0:
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(session.translator.translate, text, language),
+                operation,
                 timeout=translation_timeout,
             )
         except asyncio.TimeoutError:
@@ -569,7 +846,7 @@ async def _translate_text(
             )
             return ""
     try:
-        return await asyncio.to_thread(session.translator.translate, text, language)
+        return await operation
     except Exception as exc:
         await _safe_send(
             websocket,
@@ -629,6 +906,37 @@ async def _translation_worker(
             return
 
 
+def _retire_translation_task(
+    session: TranslationSession, task: asyncio.Task[None]
+) -> None:
+    session.retired_translation_tasks.add(task)
+
+    def _consume(done: asyncio.Task[None]) -> None:
+        session.retired_translation_tasks.discard(done)
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("Retired translation task failed", exc_info=True)
+
+    task.add_done_callback(_consume)
+
+
+async def _cancel_session_translation_tasks(session: TranslationSession) -> None:
+    tasks = set(session.retired_translation_tasks)
+    if session.translation_task and not session.translation_task.done():
+        tasks.add(session.translation_task)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    session.retired_translation_tasks.clear()
+    session.translation_task = None
+    if session.background_provider_tasks:
+        await asyncio.gather(*tuple(session.background_provider_tasks), return_exceptions=True)
+
+
 def _queue_translation(
     websocket: WebSocket,
     session: TranslationSession,
@@ -645,6 +953,18 @@ def _queue_translation(
         seq=seq,
         version=session.request_version,
     )
+    if bool(getattr(session.translator, "cancellation_safe", False)):
+        if session.translation_task and not session.translation_task.done():
+            _retire_translation_task(session, session.translation_task)
+            session.translation_task.cancel()
+        request = session.pending_request
+        session.pending_request = None
+        if request is None:
+            return
+        session.translation_task = asyncio.create_task(
+            _translate_and_send(websocket, session, request)
+        )
+        return
     if not session.translation_task or session.translation_task.done():
         session.translation_task = asyncio.create_task(
             _translation_worker(websocket, session)
@@ -724,12 +1044,18 @@ async def _apply_stt_update(
     if not _should_refresh_engine(current_cfg, merged_cfg):
         return
     try:
+        if getattr(websocket.state, "capture_version", None) == 2:
+            _validate_v2_stt_selection(
+                merged_cfg,
+                getattr(websocket.state, "capture_config", None),
+                getattr(websocket.state, "capture_revision", None),
+            )
         merged_cfg = await _ensure_model_available(
             merged_cfg, websocket, app.state.model_download_lock
         )
         engine_kwargs = _build_engine_kwargs(merged_cfg)
         engine_kwargs["pcm_input"] = bool(merged_cfg.get("pcm_input", False))
-        new_engine = TranscriptionEngine(**engine_kwargs)
+        new_engine = await _construct_stt_engine(engine_kwargs)
     except Exception as exc:
         await _safe_send(
             websocket,
@@ -898,12 +1224,33 @@ async def _handle_results(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = load_config()
+    config_path = _configured_path()
+    server_id = server_id_for_config(config_path, cfg)
+    instance_id = str(os.getenv("STT_INSTANCE_ID") or uuid.uuid4().hex)
+    app.state.config_path = config_path
+    app.state.server_id = server_id
+    app.state.instance_id = instance_id
+    app.state.ready = False
     app.state.server_config = _get_server_config(cfg)
     stt_cfg = cfg.get("stt", {})
     translation_cfg = cfg.get("translation", {})
     subtitle_cfg = cfg.get("subtitle", {})
     translator_cache_size = _normalize_cache_size(
         translation_cfg.get("translator_cache_size", 4),
+        4,
+    )
+    scheduler_cfg = translation_cfg.get("scheduler", {})
+    if not isinstance(scheduler_cfg, dict):
+        scheduler_cfg = {}
+    global_max_concurrency = _normalize_positive_int(
+        scheduler_cfg.get(
+            "global_max_concurrency",
+            translation_cfg.get("max_concurrency", 8),
+        ),
+        8,
+    )
+    default_profile_max_concurrency = _normalize_positive_int(
+        scheduler_cfg.get("default_profile_max_concurrency", 4),
         4,
     )
 
@@ -924,8 +1271,61 @@ async def lifespan(app: FastAPI):
         ),
     }
     app.state.translator_cache = LRUCache(translator_cache_size)
+    app.state.translator_build_lock = asyncio.Lock()
+    app.state.translation_scheduler = TranslationScheduler(
+        global_max_concurrency=global_max_concurrency,
+        default_profile_max_concurrency=default_profile_max_concurrency,
+    )
+    app.state.http_client = httpx.AsyncClient(
+        limits=httpx.Limits(
+            max_connections=max(global_max_concurrency * 2, 8),
+            max_keepalive_connections=max(global_max_concurrency, 4),
+        )
+    )
     app.state.model_download_lock = asyncio.Lock()
-    yield
+    async def clear_translators():
+        translators = app.state.translator_cache.clear()
+        for translator in translators:
+            await translator.aclose()
+        translators.clear()
+        translator = None
+        _release_memory()
+
+    def current_config_snapshot():
+        # The runner supplies STT_CONFIG_PATH for the shared GUI/backend file.
+        # Keep the loader fallback for embedded/test deployments that inject a
+        # config callable without creating a file on disk.
+        if os.getenv("STT_CONFIG_PATH"):
+            try:
+                snapshot = load_snapshot(config_path)
+                if isinstance(snapshot[0], dict) and snapshot[0]:
+                    return snapshot
+            except (OSError, ValueError, TypeError):
+                pass
+        return load_config(), None
+
+    managed_root = Path(cfg.get('local_llama', {}).get('root') or (_default_app_dir() / 'managed-models'))
+    app.state.translation_service = TranslationService(
+        lambda: current_config_snapshot()[0],
+        managed_root,
+        on_idle=clear_translators,
+        config_path=config_path,
+        revision_provider=lambda: load_snapshot(config_path)[1],
+        server_id=server_id,
+        instance_id=instance_id,
+        snapshot_provider=current_config_snapshot,
+    )
+    app.state.ready = True
+    try:
+        yield
+    finally:
+        app.state.ready = False
+        await app.state.translation_service.close()
+        translators = app.state.translator_cache.values()
+        for translator in translators:
+            if hasattr(translator, "aclose"):
+                await translator.aclose()
+        await app.state.http_client.aclose()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -939,6 +1339,24 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+async def health_endpoint() -> Dict[str, Any]:
+    """Lightweight backend readiness probe; never includes configuration."""
+
+    return {
+        "service": "stt-tts",
+        "instance_id": str(getattr(app.state, "instance_id", "")),
+        "ready": bool(getattr(app.state, "ready", False)),
+    }
+
+
+@app.get("/readiness")
+async def readiness_endpoint() -> Dict[str, Any]:
+    # Keep a descriptive alias for process managers that call the endpoint
+    # readiness rather than health.  The response contract is identical.
+    return await health_endpoint()
+
+
 @app.websocket("/asr")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     if not _is_local_client(websocket):
@@ -950,38 +1368,303 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    session_id = uuid.uuid4().hex
+    websocket.state.translation_lease = session_id
     stt_cfg = dict(app.state.default_stt_cfg or {})
-    translation_cfg = dict(app.state.translation_cfg or {})
-    pending_message: Optional[Dict[str, Any]] = None
+    update = None
+    pending_message = None
+    initial = None
+    capture_version = None
+    capture_config = None
+    capture_revision = None
     try:
-        initial_message = await asyncio.wait_for(
-            websocket.receive(), timeout=INITIAL_CONFIG_TIMEOUT_SEC
-        )
-    except asyncio.TimeoutError:
-        initial_message = None
-    if initial_message:
-        if initial_message.get("type") == "websocket.disconnect":
-            return
-        if "text" in initial_message and initial_message["text"] is not None:
-            try:
-                payload = json.loads(initial_message["text"])
-            except json.JSONDecodeError:
-                pending_message = initial_message
+        try:
+            initial = await asyncio.wait_for(websocket.receive(), timeout=INITIAL_CONFIG_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            pass
+        payload = {}
+        if initial:
+            if initial.get('type') == 'websocket.disconnect':
+                return
+            if initial.get('text'):
+                if len(initial['text'].encode('utf-8')) > MAX_PROFILE_IMPORT_BYTES:
+                    raise ValueError('Management request is too large.')
+                payload = json.loads(initial['text'])
+                if not isinstance(payload, dict):
+                    raise ValueError('Expected a config object')
+            if payload.get('type') == 'desktop_catalog':
+                if payload.get('version') != 2:
+                    raise ValueError('Unsupported desktop catalog version.')
+                await _safe_send(
+                    websocket,
+                    app.state.translation_service.desktop_catalog(
+                        server_id=app.state.server_id,
+                        instance_id=app.state.instance_id,
+                    ),
+                )
+                await websocket.close()
+                return
+            if payload.get('type') == 'desktop_import_profiles':
+                if payload.get('version') != 2:
+                    raise ValueError('Unsupported desktop profile import version.')
+                if not _trusted_profile_import_origin(websocket):
+                    await _safe_send(
+                        websocket,
+                        {
+                            'type': 'desktop_import_result',
+                            'version': 2,
+                            'ok': False,
+                            'mapping': {},
+                            'revision': load_snapshot(app.state.config_path)[1],
+                            'errors': [{'error': 'Profile import requires a trusted local client.'}],
+                        },
+                    )
+                    await websocket.close(code=1008)
+                    return
+                profiles = payload.get('profiles')
+                if not isinstance(profiles, list) or len(profiles) > MAX_PROFILE_IMPORT_ITEMS:
+                    raise ValueError('Profiles must be an array with at most 256 entries.')
+                expected_revision = payload.get('expected_revision')
+                if expected_revision is not None:
+                    try:
+                        expected_revision = int(expected_revision)
+                    except (TypeError, ValueError):
+                        raise ValueError('expected_revision must be an integer.')
+                try:
+                    result = import_profiles(
+                        app.state.config_path,
+                        profiles,
+                        expected_revision=expected_revision,
+                    )
+                    errors = result.get('errors') or []
+                    response = {
+                        'type': 'desktop_import_result',
+                        'version': 2,
+                        'ok': not bool(errors),
+                        'mapping': result.get('mapping') or {},
+                        'revision': int(result.get('revision', 0)),
+                    }
+                    if errors:
+                        response['errors'] = errors
+                    await _safe_send(websocket, response)
+                except RevisionConflictError as exc:
+                    await _safe_send(
+                        websocket,
+                        {
+                            'type': 'desktop_import_result',
+                            'version': 2,
+                            'ok': False,
+                            'mapping': {},
+                            'revision': exc.actual,
+                            'errors': [{'error': str(exc)}],
+                        },
+                    )
+                await websocket.close()
+                return
+            if payload.get('type') == 'translation_catalog':
+                await _safe_send(websocket, app.state.translation_service.catalog())
+                await websocket.close()
+                return
+            if payload.get('type') in {'config', 'test'}:
+                capture_version = payload.get('version')
+                websocket.state.capture_version = capture_version
+                if capture_version == 2:
+                    try:
+                        snapshot = app.state.translation_service.snapshot_provider()
+                        if isinstance(snapshot, tuple) and len(snapshot) == 2 and isinstance(snapshot[0], dict):
+                            capture_config, capture_revision = snapshot
+                        elif isinstance(snapshot, dict):
+                            capture_config = snapshot
+                    except (AttributeError, OSError, TypeError, ValueError):
+                        capture_config = None
+                    if isinstance(capture_config, dict):
+                        fresh_stt = capture_config.get('stt')
+                        stt_cfg = dict(fresh_stt) if isinstance(fresh_stt, dict) else {}
+                    websocket.state.capture_config = capture_config
+                    websocket.state.capture_revision = capture_revision
+                update = payload.get('translation')
+                stt_cfg = _merge_config(stt_cfg, _normalize_stt_update(payload.get('stt')))
+                if payload.get('version') == 2:
+                    _validate_v2_stt_selection(stt_cfg, capture_config, capture_revision)
             else:
-                if payload.get("type") == "config":
-                    translation_update = payload.get("translation")
-                    if translation_update:
-                        translation_cfg = _merge_config(
-                            translation_cfg, translation_update
-                        )
-                    stt_update = _normalize_stt_update(payload.get("stt"))
-                    if stt_update:
-                        stt_cfg = _merge_config(stt_cfg, stt_update)
-                else:
-                    pending_message = initial_message
+                pending_message = initial
+        if capture_version == 2:
+            await _safe_send(
+                websocket,
+                {
+                    'type': 'status',
+                    'phase': 'loading',
+                    'message': 'Preparing selected translation service',
+                    'snapshot': _capture_snapshot(stt_cfg, update or app.state.translation_cfg or {}),
+                },
+            )
         else:
-            pending_message = initial_message
+            await _safe_send(websocket, {'type': 'status', 'message': 'Preparing selected translation service'})
+        translation_cfg = await _acquire_translation_for_socket(
+            websocket,
+            session_id,
+            update,
+            stt_cfg,
+            config_override=capture_config,
+        )
+        if capture_version == 2:
+            await _send_capture_status(
+                websocket,
+                'loading',
+                'Preparing selected translation service',
+                stt_cfg,
+                translation_cfg,
+            )
+        if payload.get('type') == 'test' and payload.get('target') == 'translation':
+            translator = await _resolve_translator(app.state.translator_cache, translation_cfg,
+                                                  app.state.http_client, app.state.translator_build_lock)
+            result = await app.state.translation_scheduler.translate(translator, 'Hello world', 'en')
+            await _safe_send(websocket, {'type': 'test_result', 'ok': True, 'message': result})
+            await websocket.close()
+            return
+        await _run_selected_session(websocket, stt_cfg, translation_cfg, pending_message)
+    except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        await _safe_send(websocket, {'type': 'error', 'message': str(exc)})
+        await websocket.close(code=1008)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception('Capture startup failed')
+        await _safe_send(websocket, {'type': 'error', 'message': 'Capture startup failed; see backend log'})
+        await websocket.close(code=1011)
+    finally:
+        await app.state.translation_service.release(session_id)
 
+
+async def _selected_translation_update(websocket, current, update, stt):
+    merged = _merge_config(current, update)
+    # Every route change, including legacy config/test messages, goes through
+    # the same lease. A session may change language, but not its active provider.
+    merged = await app.state.translation_service.acquire(websocket.state.translation_lease, merged, stt)
+    return merged
+
+
+async def _receive_capture_message(websocket):
+    buffered = getattr(websocket.state, 'startup_messages', [])
+    if buffered:
+        return buffered.pop(0)
+    return await websocket.receive()
+
+
+async def _construct_stt_engine_for_socket(websocket, engine_kwargs: Dict[str, Any]):
+    """Build an engine while still servicing disconnect and bounded input."""
+
+    engine_task = asyncio.create_task(_construct_stt_engine(engine_kwargs))
+    receive_task = None
+    startup_messages = getattr(websocket.state, "startup_messages", None)
+    if not isinstance(startup_messages, list):
+        startup_messages = []
+        websocket.state.startup_messages = startup_messages
+    buffered_bytes = sum(
+        len(message.get("bytes") or b"") + len(message.get("text") or "")
+        for message in startup_messages
+        if isinstance(message, dict)
+    )
+
+    def buffer(message: Dict[str, Any]) -> None:
+        nonlocal buffered_bytes
+        if message.get("type") == "websocket.disconnect":
+            raise WebSocketDisconnect(message.get("code", 1000))
+        buffered_bytes += len(message.get("bytes") or b"") + len(message.get("text") or "")
+        if buffered_bytes > 8 * 1024 * 1024 or len(startup_messages) >= 4096:
+            raise ValueError("Model startup audio buffer is full. Stop capture and retry after loading a smaller model.")
+        startup_messages.append(message)
+
+    try:
+        while not engine_task.done():
+            # Any messages already buffered by translation startup must remain
+            # in ``startup_messages``.  Read only new socket traffic here;
+            # calling _receive_capture_message would pop and append the same
+            # buffered item repeatedly while the engine loads.
+            receive_task = asyncio.create_task(websocket.receive())
+            done, _ = await asyncio.wait(
+                (engine_task, receive_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if engine_task in done:
+                if receive_task in done:
+                    try:
+                        buffer(receive_task.result())
+                    except WebSocketDisconnect:
+                        _dispose_stt_task_result(engine_task)
+                        raise
+                else:
+                    receive_task.cancel()
+                    await asyncio.gather(receive_task, return_exceptions=True)
+                return await engine_task
+            try:
+                buffer(receive_task.result())
+            except WebSocketDisconnect:
+                if not engine_task.done():
+                    _watch_stt_task_for_cleanup(engine_task)
+                raise
+            finally:
+                receive_task = None
+        return await engine_task
+    except BaseException:
+        if receive_task is not None and not receive_task.done():
+            receive_task.cancel()
+            await asyncio.gather(receive_task, return_exceptions=True)
+        if not engine_task.done():
+            _watch_stt_task_for_cleanup(engine_task)
+        raise
+
+
+async def _acquire_translation_for_socket(websocket, session_id, update, stt, config_override=None):
+    """Observe disconnect while the model loads; keep early audio in a bounded queue."""
+    websocket.state.startup_messages = []
+    buffered_bytes = 0
+    if config_override is None:
+        acquire = asyncio.create_task(app.state.translation_service.acquire(session_id, update, stt))
+    else:
+        acquire = asyncio.create_task(
+            app.state.translation_service.acquire(
+                session_id,
+                update,
+                stt,
+                config_override=config_override,
+            )
+        )
+    incoming = None
+
+    def buffer(message):
+        nonlocal buffered_bytes
+        if message.get('type') == 'websocket.disconnect':
+            raise WebSocketDisconnect(message.get('code', 1000))
+        buffered_bytes += len(message.get('bytes') or b'') + len(message.get('text') or '')
+        if buffered_bytes > 8 * 1024 * 1024 or len(websocket.state.startup_messages) >= 4096:
+            raise ValueError('Model startup audio buffer is full. Stop capture and retry after loading a smaller model.')
+        websocket.state.startup_messages.append(message)
+
+    try:
+        while not acquire.done():
+            incoming = asyncio.create_task(websocket.receive())
+            done, _ = await asyncio.wait((acquire, incoming), return_when=asyncio.FIRST_COMPLETED)
+            if incoming in done:
+                buffer(incoming.result())
+                incoming = None
+            if acquire.done():
+                break
+        if incoming is not None and incoming.done():
+            buffer(incoming.result())
+            incoming = None
+        return await acquire
+    except BaseException:
+        acquire.cancel()
+        await asyncio.gather(acquire, return_exceptions=True)
+        raise
+    finally:
+        if incoming is not None:
+            incoming.cancel()
+            await asyncio.gather(incoming, return_exceptions=True)
+
+
+async def _run_selected_session(websocket, stt_cfg, translation_cfg, pending_message):
     try:
         stt_cfg = await _ensure_model_available(
             stt_cfg, websocket, app.state.model_download_lock
@@ -994,10 +1677,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     )
     engine_kwargs = _build_engine_kwargs(stt_cfg)
     engine_kwargs["pcm_input"] = bool(stt_cfg.get("pcm_input", False))
-    stt_engine = TranscriptionEngine(**engine_kwargs)
+    stt_engine = await _construct_stt_engine_for_socket(websocket, engine_kwargs)
     if gpu_log_interval_sec > 0:
         _log_cuda_memory("engine init")
-    translator = await _resolve_translator(app.state.translator_cache, translation_cfg)
+    translator = await _resolve_translator(
+        app.state.translator_cache,
+        translation_cfg,
+        app.state.http_client,
+        app.state.translator_build_lock,
+    )
     audio_processor = AudioProcessor(
         transcription_engine=stt_engine,
     )
@@ -1006,6 +1694,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         translation_cfg,
         stt_session.default_language,
         translator,
+        app.state.translation_scheduler,
         app.state.subtitle_cfg,
     )
     results_generator = await audio_processor.create_tasks()
@@ -1029,12 +1718,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         async with stt_session.reset_lock:
             try:
                 old_engine = stt_engine
-                if session.translation_task and not session.translation_task.done():
-                    session.translation_task.cancel()
-                    try:
-                        await session.translation_task
-                    except asyncio.CancelledError:
-                        pass
+                await _cancel_session_translation_tasks(session)
                 if session.debounce_task and not session.debounce_task.done():
                     session.debounce_task.cancel()
                     try:
@@ -1061,7 +1745,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     engine_kwargs["pcm_input"] = bool(
                         stt_session.cfg.get("pcm_input", False)
                     )
-                    stt_engine = TranscriptionEngine(**engine_kwargs)
+                    stt_engine = await _construct_stt_engine(engine_kwargs)
                     stt_session.engine_builds += 1
                     if gpu_log_interval_sec > 0:
                         _log_cuda_memory(f"engine rebuild ({reason})")
@@ -1131,14 +1815,23 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     watchdog_task = asyncio.create_task(_stt_watchdog())
 
     try:
-        await _safe_send(websocket, {"type": "status", "message": "connected"})
+        if getattr(websocket.state, "capture_version", None) == 2:
+            await _send_capture_status(
+                websocket,
+                "capturing",
+                "Capture ready",
+                stt_cfg,
+                translation_cfg,
+            )
+        else:
+            await _safe_send(websocket, {"type": "status", "message": "connected"})
         while True:
             try:
                 if pending_message is not None:
                     message = pending_message
                     pending_message = None
                 else:
-                    message = await websocket.receive()
+                    message = await _receive_capture_message(websocket)
             except WebSocketDisconnect:
                 break
             except RuntimeError:
@@ -1173,9 +1866,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 if msg_type == "config":
                     translation_update = payload.get("translation")
                     if translation_update:
-                        merged = _merge_config(session.cfg, translation_update)
+                        merged = await _selected_translation_update(websocket, session.cfg, translation_update, stt_cfg)
+                        await _cancel_session_translation_tasks(session)
                         session.translator = await _resolve_translator(
-                            app.state.translator_cache, merged
+                            app.state.translator_cache,
+                            merged,
+                            app.state.http_client,
+                            app.state.translator_build_lock,
                         )
                         session.cfg = merged
                         session.translate_partials = bool(
@@ -1211,23 +1908,33 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         )
                 elif msg_type == "test":
                     if payload.get("target") == "translation":
-                        test_cfg = _merge_config(
-                            session.cfg, payload.get("translation")
-                        )
+                        test_cfg = await _selected_translation_update(websocket, session.cfg, payload.get("translation"), stt_cfg)
+                        target_desc = describe_translation_target(test_cfg)
                         try:
                             test_translator = await _resolve_translator(
-                                app.state.translator_cache, test_cfg
+                                app.state.translator_cache,
+                                test_cfg,
+                                app.state.http_client,
+                                app.state.translator_build_lock,
                             )
-                            result = await asyncio.to_thread(
-                                test_translator.translate, "Hello world", "en"
-                            )
+                            action = str(payload.get("action") or "translate")
+                            if action in {"models", "health"}:
+                                health = await test_translator.health_check()
+                                if not health.get("ok"):
+                                    raise RuntimeError(str(health.get("error") or "Health check failed"))
+                                models = health.get("models") or []
+                                result = f"Models reachable: {', '.join(models[:10]) or '(none listed)'}"
+                            else:
+                                result = await app.state.translation_scheduler.translate(
+                                    test_translator, "Hello world", "en"
+                                )
                             await _safe_send(
                                 websocket,
                                 {
                                     "type": "test_result",
                                     "target": "translation",
                                     "ok": True,
-                                    "message": f"Translation ok: {result[:60]}",
+                                    "message": f"Translation ok via {target_desc}: {result[:60]}",
                                 },
                             )
                         except Exception as exc:
@@ -1237,7 +1944,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                     "type": "test_result",
                                     "target": "translation",
                                     "ok": False,
-                                    "message": str(exc),
+                                    "message": f"{target_desc} :: {exc}",
                                 },
                             )
                 elif msg_type == "ping":
@@ -1258,12 +1965,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             except asyncio.CancelledError:
                 pass
         await _close_results_generator(results_generator)
-        if session.translation_task and not session.translation_task.done():
-            session.translation_task.cancel()
-            try:
-                await session.translation_task
-            except asyncio.CancelledError:
-                pass
+        await _cancel_session_translation_tasks(session)
         if session.debounce_task and not session.debounce_task.done():
             session.debounce_task.cancel()
             try:

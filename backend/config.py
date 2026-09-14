@@ -40,5 +40,9 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
         raise ValueError(f"Config root must be a mapping: {config_path}")
+    # config_store commits its optimistic-concurrency marker in the same
+    # atomic document as the YAML.  Runtime consumers should only see the
+    # application settings, never storage bookkeeping.
+    data.pop("_stt_tts_store", None)
     _ensure_model_cache_dir(data)
     return data

@@ -24,15 +24,27 @@ class LRUCache(Generic[K, V]):
             self._data[key] = value
             return value, True
 
-    def set(self, key: K, value: V) -> None:
+    def set(self, key: K, value: V) -> Optional[V]:
         if self.max_size <= 0:
-            return
+            return None
+        evicted: Optional[V] = None
         with self._lock:
             if key in self._data:
-                self._data.pop(key)
+                evicted = self._data.pop(key)
             self._data[key] = value
             while len(self._data) > self.max_size:
-                self._data.popitem(last=False)
+                _, evicted = self._data.popitem(last=False)
+        return evicted
+
+    def values(self) -> list[V]:
+        with self._lock:
+            return list(self._data.values())
+
+    def clear(self) -> list[V]:
+        with self._lock:
+            values = list(self._data.values())
+            self._data.clear()
+            return values
 
     def __len__(self) -> int:
         return len(self._data)

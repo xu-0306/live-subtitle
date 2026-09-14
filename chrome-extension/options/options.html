@@ -3,134 +3,114 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>STT Subtitle Capture Settings</title>
+    <title>STT Subtitle Capture options</title>
     <link rel="stylesheet" href="../popup/popup.css" />
   </head>
-  <body class="options">
-    <div class="shell">
-      <header class="title-row">
-        <div class="signal-dot" aria-hidden="true"></div>
-        <div class="title-text">
-          <span class="title">Signal Bridge</span>
-          <span class="subtitle">tab audio to subtitles</span>
+  <body class="options" data-page="options">
+    <main class="options-shell app-shell" aria-label="STT Subtitle Capture options">
+      <header class="app-header options-header">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <div class="brand-copy">
+          <strong>STT Subtitle Capture</strong>
+          <span>extension preferences</span>
         </div>
-        <span class="chip">WEBM/OPUS</span>
+        <label class="theme-control" for="themeSelect">
+          <span>Theme</span>
+          <select id="themeSelect" class="inline-mode" aria-label="Theme preference">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
       </header>
 
-      <section class="hero">
-        <h1>Stream tab audio</h1>
-        <p>Send WebM/Opus audio to WhisperLiveKit and choose a translation engine.</p>
+      <section class="options-intro">
+        <p class="eyebrow">Settings</p>
+        <h1>Subtitle settings</h1>
+        <p>Manage services in the desktop app, then choose the language and subtitle appearance used by new captures.</p>
       </section>
 
-      <section class="panel">
-        <label for="wsUrl">WebSocket URL</label>
-        <div class="input-wrap">
-          <input
-            id="wsUrl"
-            type="text"
-            inputmode="url"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="ws://127.0.0.1:8765/asr"
-          />
-        </div>
-
-        <div class="config-grid">
-          <div class="field">
-            <label for="translationModelSelect">Translation Model</label>
-            <div class="select-wrap">
-              <select id="translationModelSelect"></select>
-            </div>
+      <div class="options-grid">
+        <section class="card options-card">
+          <div class="section-heading">
+            <div><p class="eyebrow">Connection</p><h2>Desktop backend</h2></div>
+            <span id="connectionIndicator" class="status-dot" data-state="idle" aria-hidden="true"></span>
           </div>
-          <div class="field">
-            <label for="sttModelSizeSelect">Whisper Model Size</label>
-            <div class="select-wrap">
-              <select id="sttModelSizeSelect"></select>
-            </div>
-          </div>
-        </div>
-
-        <section class="settings-card">
-          <h2>Translation Settings</h2>
-          <div class="settings-form">
-            <div class="settings-row">
-              <span class="row-label">Target language</span>
-              <span id="translationLanguageValue" class="row-value">Auto</span>
-            </div>
-            <div class="select-wrap">
-              <select id="translationLanguageSelect"></select>
-            </div>
-            <input id="newTranslationName" type="text" placeholder="Display name" />
-            <div class="select-wrap">
-              <select id="newTranslationEngine">
-                <option value="nllb" selected>NLLB (local)</option>
-                <option value="ollama">ollama</option>
-                <option value="openai">openai</option>
-                <option value="noop">none</option>
-              </select>
-            </div>
-            <input
-              id="newTranslationModel"
-              type="text"
-              placeholder="Model name (optional)"
-            />
-            <input
-              id="newTranslationHost"
-              type="text"
-              placeholder="API host (ollama)"
-            />
-            <input
-              id="newTranslationApiKey"
-              type="password"
-              placeholder="API key (openai)"
-            />
-            <input
-              id="newTranslationBaseUrl"
-              type="text"
-              placeholder="Base URL (openai, optional)"
-            />
-            <button id="addTranslationModel" class="ghost">Add translation model</button>
-          </div>
-          <div id="translationModelList" class="model-list"></div>
-        </section>
-
-        <section class="settings-card">
-          <h2>Subtitle Behavior</h2>
-          <div class="settings-form">
-            <div class="settings-row">
-              <span class="row-label">History lines</span>
-              <span id="subtitleHistoryLinesValue" class="row-value">2</span>
-            </div>
-            <input
-              id="subtitleHistoryLines"
-              type="range"
-              min="1"
-              max="4"
-              step="1"
-              value="2"
-            />
-            <div class="settings-row">
-              <span class="row-label">Show partial line</span>
-              <span id="subtitleShowPartialValue" class="row-value">On</span>
-            </div>
-            <div class="select-wrap">
-              <select id="subtitleShowPartial">
-                <option value="on" selected>On</option>
-                <option value="off">Off</option>
-              </select>
-            </div>
-            <p class="hint">Keep recent lines visible while partials update below.</p>
+          <label class="field-label" for="wsUrl">WebSocket URL</label>
+          <input id="wsUrl" class="text-control" type="url" inputmode="url" spellcheck="false" autocomplete="off" placeholder="ws://127.0.0.1:8765/asr" />
+          <div class="sync-line options-sync" role="status" aria-live="polite">
+            <span id="catalogStateDot" class="mini-dot" data-state="idle" aria-hidden="true"></span>
+            <span id="desktopServicesStatus">Waiting for desktop catalog</span>
+            <button id="refreshDesktopServices" class="refresh-button" type="button" title="Refresh desktop catalog" aria-label="Refresh desktop catalog">↻</button>
           </div>
         </section>
 
-        <div id="status" class="status" data-state="idle">Idle</div>
-      </section>
+        <section class="card options-card">
+          <div class="section-heading">
+            <div><p class="eyebrow">Managed catalog</p><h2>Models</h2></div>
+            <span id="catalogRevision" class="revision-label">Not synced</span>
+          </div>
+          <p class="card-copy">Manage services in the desktop app. Choose which model a new capture should use.</p>
+          <div class="field">
+            <label class="field-label" for="translationModelSelect">Translation service</label>
+            <select id="translationModelSelect" class="native-control"></select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="sttModelSizeSelect">Speech model</label>
+            <select id="sttModelSizeSelect" class="native-control"></select>
+          </div>
+          <p id="catalogDetails" class="field-hint"></p>
+        </section>
 
-      <footer class="footer">
-        <span>Tip:</span> keep the tab playing audio while capture is active.
-      </footer>
-    </div>
+        <section class="card options-card">
+          <div class="section-heading">
+            <div><p class="eyebrow">Per-tab behavior</p><h2>Overrides</h2></div>
+            <span class="section-badge">Next capture</span>
+          </div>
+          <div class="field">
+            <div class="label-with-mode"><label class="field-label" for="translationLanguageSelect">Target language</label><select id="translationLanguageModeSelect" class="inline-mode" aria-label="Target language scope"><option value="inherit">Inherit</option><option value="override">Override</option></select></div>
+            <input id="translationLanguageSelect" class="text-control" type="text" list="translationLanguages" maxlength="128" spellcheck="false" autocomplete="off" placeholder="Language name or code" />
+            <datalist id="translationLanguages"></datalist>
+            <p class="field-hint">Choose a language or type your own.</p>
+          </div>
+          <div class="two-column">
+            <div class="field"><label class="field-label" for="translationBehaviorSelect">Translation partials</label><select id="translationBehaviorSelect" class="native-control"><option value="inherit">Inherit</option><option value="final">Final only</option><option value="partial">Partial and final</option></select></div>
+            <div class="field"><label class="field-label" for="sttModelModeSelect">Speech setting</label><select id="sttModelModeSelect" class="native-control"><option value="inherit">Inherit</option><option value="override">Override</option></select></div>
+          </div>
+          <p class="field-hint">Changing these values never rewrites a capture that is already running.</p>
+        </section>
 
+        <section class="card options-card appearance-card">
+          <div class="section-heading"><div><p class="eyebrow">Subtitle surface</p><h2>Appearance</h2></div><span class="section-badge">Saved locally</span></div>
+          <div class="range-row"><label for="subtitleOriginalSize">Original text</label><output id="subtitleOriginalSizeValue">100%</output></div>
+          <input id="subtitleOriginalSize" type="range" min="0.7" max="1.6" step="0.1" value="1" />
+          <div class="range-row"><label for="subtitleTranslatedSize">Translated text</label><output id="subtitleTranslatedSizeValue">100%</output></div>
+          <input id="subtitleTranslatedSize" type="range" min="0.7" max="1.6" step="0.1" value="1" />
+          <div class="range-row"><label for="overlayOpacity">Overlay opacity</label><output id="overlayOpacityValue">85%</output></div>
+          <input id="overlayOpacity" type="range" min="0.35" max="1" step="0.05" value="0.85" />
+          <div class="range-row"><label for="subtitleHistoryLines">History lines</label><output id="subtitleHistoryLinesValue">2</output></div>
+          <input id="subtitleHistoryLines" type="range" min="1" max="4" step="1" value="2" />
+          <label class="checkbox-row" for="subtitleShowPartial"><input id="subtitleShowPartial" type="checkbox" checked /><span>Show partial subtitle line</span></label>
+        </section>
+
+        <section id="migrationCard" class="card options-card migration-card" hidden>
+          <div class="section-heading"><div><p class="eyebrow">One-time upgrade</p><h2>Move saved services</h2></div><span class="section-badge">Desktop app</span></div>
+          <p id="migrationSummary" class="card-copy">Move older saved services into the desktop app.</p>
+          <button id="migrateProfilesBtn" class="secondary-button" type="button">Import saved services</button>
+          <p id="migrationStatus" class="field-hint" role="status" aria-live="polite"></p>
+        </section>
+      </div>
+
+      <div id="status" class="status-banner options-status" data-state="idle" role="status" aria-live="polite">Idle</div>
+    </main>
+
+    <script src="../shared/connection-settings.js"></script>
+    <script src="../shared/translation-client.js"></script>
+    <script src="../shared/catalog.js"></script>
+    <script src="../shared/theme.js"></script>
+    <script src="../shared/capture-settings.js"></script>
+    <script src="../shared/migration.js"></script>
     <script src="../popup/popup.js"></script>
+    <script src="options.js"></script>
   </body>
 </html>

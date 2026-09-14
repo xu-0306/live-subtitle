@@ -23,9 +23,8 @@ stt:
   engine_recycle_sec: 0 # rebuild STT engine periodically to release memory (0 disables)
   memory_cleanup_interval_sec: 60 # run gc/empty_cache periodically (0 disables)
   gpu_log_interval_sec: 0 # log CUDA memory stats every N seconds (0 disables)
-
 translation:
-  engine: "nllb" # nllb, ollama, openai, noop
+  engine: "noop" # Desktop fallback; choose a local model or API service in the extension.
   target_language: "zh-TW"
   cache_size: 512 # per-text translation cache size (0 disables)
   translator_cache_size: 4 # max cached translator instances
@@ -34,6 +33,9 @@ translation:
   segment_max_chars: 160 # force-translate when buffer exceeds this (0 disables)
   segment_max_ms: 4000 # force-translate after this duration (0 disables)
   partial: false
+  scheduler:
+    global_max_concurrency: 8
+    default_profile_max_concurrency: 4
   nllb:
     model: "facebook/nllb-200-distilled-600M"
   ollama:
@@ -41,9 +43,31 @@ translation:
     host: "http://localhost:11434"
     keep_alive: "5m"
   openai:
-    model: "gpt-4o-mini"
+    model: "gpt-5.3-codex-spark"
     api_key: ""
-    base_url: ""
+    base_url: "https://co.yes.vg/v1/chat/completions" # full endpoint or provider base URL
+    api_type: "chat_completions" # chat_completions, responses, messages
+    auto_complete_endpoint: true # false uses the entered URL without appending an endpoint
+  vllm:
+    active_profile: "local-default"
+    profiles:
+      - id: "local-default"
+        name: "Local vLLM"
+        mode: "local" # local runtime launch is managed by the desktop GUI, not this adapter
+        base_url: "http://127.0.0.1:8000"
+        api_key: ""
+        model: ""
+        served_model: ""
+        api_type: "chat_completions"
+        auto_complete_endpoint: true
+        max_concurrency: 4
+        runtime: # saved for a local launcher; the HTTP translation adapter does not apply it
+          max_model_len: 4096
+          max_num_seqs: 16
+          tensor_parallel_size: 1
+          gpu_memory_utilization: 0.9
+          dtype: "auto"
+          quantization: "auto"
 
 subtitle:
   max_chars: 260

@@ -1,9 +1,27 @@
+importScripts("../shared/connection-settings.js");
+
 const OFFSCREEN_URL = chrome.runtime.getURL("offscreen/offscreen.html");
 const tabStatus = new Map();
 const captureSettings = new Map();
 const restartState = new Map();
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 30000;
+
+function migrateStoredTranslationSecrets() {
+  chrome.storage.local.get(["translationModels"], (data) => {
+    if (chrome.runtime.lastError || !Array.isArray(data.translationModels)) return;
+    globalThis.STTConnectionSettings.migrateModelSecrets(data.translationModels)
+      .then(({ models, changed }) => {
+        if (changed) return chrome.storage.local.set({ translationModels: models });
+        return undefined;
+      })
+      .catch((err) => {
+        console.warn("[background] API key migration failed:", err?.message || err);
+      });
+  });
+}
+
+migrateStoredTranslationSecrets();
 
 async function ensureContentScript(tabId) {
   if (!tabId) return false;
@@ -78,13 +96,49 @@ function getRestartState(tabId) {
 
 function rememberCaptureSettings(tabId, wsUrl, settings) {
   if (!Number.isInteger(tabId)) return;
-  captureSettings.set(tabId, { wsUrl, settings });
+  captureSettings.set(tabId, {
+    wsUrl,
+    settings,
+    snapshot: sanitizeCaptureSnapshot(settings),
+  });
+}
+
+function sanitizeCaptureSnapshot(settings) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const translation = source.translation && typeof source.translation === "object"
+    ? source.translation
+    : undefined;
+  const selection = translation?.selection && typeof translation.selection === "object"
+    ? {
+        kind: String(translation.selection.kind || ""),
+        ...(translation.selection.id ? { id: String(translation.selection.id) } : {}),
+      }
+    : undefined;
+  const stt = source.stt && typeof source.stt === "object"
+    ? {
+        ...(source.stt.model ? { model: String(source.stt.model) } : {}),
+        ...(source.stt.backend ? { backend: String(source.stt.backend) } : {}),
+      }
+    : undefined;
+  return {
+    version: Number(source.version || 2),
+    ...(["local", "profile", "none"].includes(selection?.kind) ? { selection } : {}),
+    ...(translation?.target_language ? { target_language: String(translation.target_language) } : {}),
+    ...(typeof translation?.partial === "boolean" ? { partial: translation.partial } : {}),
+    ...(stt ? { stt } : {}),
+  };
 }
 
 function clearCaptureSettings(tabId) {
   if (!Number.isInteger(tabId)) return;
   captureSettings.delete(tabId);
   restartState.delete(tabId);
+}
+
+function isTerminalCapturePhase(phase) {
+  return ["error", "failed", "stopping", "stopped", "idle"].includes(
+    String(phase || "").trim().toLowerCase()
+  );
 }
 
 async function ensureOffscreenDocument() {
@@ -228,13 +282,16 @@ async function sendSubtitleToTab(tabId, payload) {
 }
 
 function buildFallbackStatus(requestedTabId) {
-  const status = tabStatus.get(requestedTabId) || { running: false, status: "Idle" };
+  const status = tabStatus.get(requestedTabId) || { running: false, status: "Idle", phase: "idle" };
   const anyRunning = Array.from(tabStatus.values()).some((item) => item.running);
   return {
     ok: true,
     capturing: Boolean(status.running),
     status: status.status || (status.running ? "Capturing" : "Idle"),
+    phase: status.phase || (status.running ? "capturing" : "idle"),
+    snapshot: status.snapshot || captureSettings.get(requestedTabId)?.snapshot || null,
     globalCapturing: anyRunning,
+    occupancy: Array.from(tabStatus.values()).filter((item) => item.running).map((item) => ({ tabId: item.tabId, phase: item.phase || "capturing" })),
   };
 }
 
@@ -274,7 +331,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               ok: true,
               capturing: Boolean(response.running),
               status: response.status || (response.running ? "Capturing" : "Idle"),
+              phase: response.phase || (response.running ? "capturing" : "idle"),
+              snapshot: response.snapshot || captureSettings.get(requestedTabId)?.snapshot || null,
               globalCapturing: Boolean(response.anyRunning),
+              occupancy: response.occupancy || [],
             });
             return;
           }
@@ -292,19 +352,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const running = Boolean(message.running);
       const statusText = message.status || (running ? "Capturing" : "Idle");
       tabStatus.set(message.tabId, {
+        tabId: message.tabId,
         running,
         status: statusText,
+        phase: message.phase || (running ? "capturing" : "idle"),
+        snapshot: message.snapshot || captureSettings.get(message.tabId)?.snapshot || null,
       });
       if (!running) {
         const lowered = String(statusText).toLowerCase();
-        if (
-          lowered.includes("disconnected") ||
-          lowered.includes("websocket error") ||
-          lowered.includes("stopped")
-        ) {
+        const phase = message.phase || "idle";
+        if (isTerminalCapturePhase(phase)) {
           sendSubtitleToTab(message.tabId, { type: "subtitle-remove" });
         }
-        if (lowered.includes("disconnected") || lowered.includes("websocket error")) {
+        if (message.retryable !== false && (lowered.includes("disconnected") || lowered.includes("websocket error"))) {
           restartCapture(message.tabId, statusText);
         }
       }
@@ -361,3 +421,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+
+if (chrome.tabs?.onUpdated?.addListener) {
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (!Number.isInteger(tabId) || !changeInfo?.url) return;
+    const status = tabStatus.get(tabId);
+    if (!captureSettings.has(tabId) && !status?.running) return;
+    clearCaptureSettings(tabId);
+    stopCapture(tabId).catch((err) => {
+      console.warn("[background] Failed to stop capture after tab navigation:", err?.message || err);
+    });
+  });
+}
