@@ -22,17 +22,29 @@ node_modules/
 # IDE / OS
 .idea/
 .vscode/
+.codex/
 .DS_Store
 Thumbs.db
 .claude/
 .serena/
 
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
 # Local artifacts
+.work/
+.spec-workflow/
+/*.zip
+nuitka-crash-report.xml
 *.pt
 *.bin
 *.safetensors
 *.gguf
 Models/
+Speech models/
+Local Translation Models/
 whisper-large-v3/
 
 # Audio / video captures
@@ -50,6 +62,7 @@ Screenshot*.png
 
 # Local scripts / shortcuts
 *.bat
+!Start-GUI.bat
 *.lnk
 
 # One-off local files

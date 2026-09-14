@@ -1,24 +1,40 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
 import yaml
 
-APP_DIR_NAME = "STT-TTS"
+APP_DIR_NAME = "Live Subtitle"
+LEGACY_APP_DIR_NAME = "STT-TTS"
+SPEECH_MODELS_DIR_NAME = "Speech models"
+LOCAL_TRANSLATION_MODELS_DIR_NAME = "Local Translation Models"
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "backend" / "config.yaml"
 
 
-def get_app_dir() -> Path:
+def _app_paths() -> tuple[Path, Path]:
     appdata = os.getenv("APPDATA")
     if appdata:
         base = Path(appdata)
     else:
-        base = Path.home() / ".stt-tts"
-    target = base / APP_DIR_NAME
+        base = Path.home()
+    target = base / (APP_DIR_NAME if os.getenv("APPDATA") else ".live-subtitle")
+    legacy = base / (LEGACY_APP_DIR_NAME if os.getenv("APPDATA") else ".stt-tts")
+    return target, legacy
+
+
+def get_app_dir() -> Path:
+    target, legacy = _app_paths()
     target.mkdir(parents=True, exist_ok=True)
+    legacy_config = legacy / "config.yaml"
+    target_config = target / "config.yaml"
+    if not target_config.exists() and legacy_config.is_file():
+        # Keep the old directory intact for rollback. Model paths embedded in
+        # the copied config continue to point at existing large downloads.
+        shutil.copy2(legacy_config, target_config)
     return target
 
 
@@ -27,9 +43,15 @@ def get_user_config_path() -> Path:
 
 
 def get_default_model_dir() -> Path:
-    path = get_app_dir() / "models"
+    path = get_app_dir() / SPEECH_MODELS_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def get_default_model_storage_dir() -> Path:
+    """Return the shared root for speech and local-translation assets."""
+
+    return _app_paths()[0]
 
 
 def load_default_config() -> Dict[str, Any]:

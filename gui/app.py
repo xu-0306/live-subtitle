@@ -51,6 +51,7 @@ _ICON_PATHS = {
     "stop": "M6 6h12v12H6V6Z",
     "restart": "M20 11a8 8 0 1 0 1 4M20 5v6h-6",
     "copy": "M8 8h11v12H8V8ZM5 16H4V4h12v1",
+    "folder": "M3 6h7l2 2h9v11H3V6Zm0 3h18",
 }
 
 
@@ -126,7 +127,7 @@ class MainWindow(QtWidgets.QMainWindow):
         setup_tray: bool | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("STT Backend Control")
+        self.setWindowTitle("Live Subtitle")
         self.setMinimumSize(900, 640)
 
         self.config_path = Path(config_path) if config_path else config_manager.ensure_user_config()
@@ -218,9 +219,9 @@ class MainWindow(QtWidgets.QMainWindow):
         brand_icon.setFixedSize(38, 38)
         brand_row.addWidget(brand_icon)
         brand_text = QtWidgets.QVBoxLayout()
-        brand_title = QtWidgets.QLabel("STT Control")
+        brand_title = QtWidgets.QLabel("Live Subtitle")
         brand_title.setObjectName("brandTitle")
-        brand_subtitle = QtWidgets.QLabel("Speech and translation")
+        brand_subtitle = QtWidgets.QLabel("Live speech and translation")
         brand_subtitle.setObjectName("sidebarMuted")
         brand_text.addWidget(brand_title)
         brand_text.addWidget(brand_subtitle)
@@ -251,7 +252,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sidebar_hint.setObjectName("sidebarMuted")
         self.sidebar_hint.setWordWrap(True)
         sidebar_layout.addWidget(self.sidebar_hint)
-        self.sidebar_version = QtWidgets.QLabel("Desktop utility · local settings")
+        self.sidebar_version = QtWidgets.QLabel("Desktop app · private by default")
         self.sidebar_version.setObjectName("sidebarMuted")
         self.sidebar_version.setWordWrap(True)
         sidebar_layout.addWidget(self.sidebar_version)
@@ -298,7 +299,8 @@ class MainWindow(QtWidgets.QMainWindow):
         local_panel = QtWidgets.QWidget()
         self.local_models = LocalModelController(
             local_panel,
-            self.config_path.parent / "managed-models",
+            self._model_storage_root_from_config(self.config)
+            / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME,
             lambda: self._collect_config_from_ui() if hasattr(self, "local_models") else self.config,
             self._persist_local_config,
             self,
@@ -499,14 +501,6 @@ class MainWindow(QtWidgets.QMainWindow):
         model_select_layout.addWidget(self.model_refresh_btn)
         model_select_layout.addWidget(self.model_download_btn)
 
-        self.model_cache_input = QtWidgets.QLineEdit()
-        self.model_cache_btn = QtWidgets.QPushButton("Browse")
-        model_cache_row = QtWidgets.QWidget()
-        model_cache_layout = QtWidgets.QHBoxLayout(model_cache_row)
-        model_cache_layout.setContentsMargins(0, 0, 0, 0)
-        model_cache_layout.addWidget(self.model_cache_input, 1)
-        model_cache_layout.addWidget(self.model_cache_btn)
-
         self.download_progress = QtWidgets.QProgressBar()
         self.download_progress.setValue(0)
         self.download_progress.setTextVisible(True)
@@ -514,7 +508,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.download_label = QtWidgets.QLabel("")
 
         form.addRow("Default model", model_select_row)
-        form.addRow("Model directory", model_cache_row)
         form.addRow("Download progress", self.download_progress)
         form.addRow("", self.download_label)
         self.stt_language_input = QtWidgets.QComboBox()
@@ -542,11 +535,9 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-        self.model_cache_btn.clicked.connect(self._browse_model_dir)
         self.model_refresh_btn.clicked.connect(self._refresh_model_list)
         self.model_download_btn.clicked.connect(self._download_selected_model)
         self.model_select_combo.currentIndexChanged.connect(self._update_model_state)
-        self.model_cache_input.editingFinished.connect(self._refresh_model_list)
         self.stt_language_input.currentTextChanged.connect(self._mark_dirty)
         self.stt_partial_check.toggled.connect(self._mark_dirty)
 
@@ -704,10 +695,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
         behavior = self._card("Settings and lifecycle")
         behavior_layout = behavior.layout()
+        settings_row = QtWidgets.QWidget()
+        settings_row_layout = QtWidgets.QHBoxLayout(settings_row)
+        settings_row_layout.setContentsMargins(0, 0, 0, 0)
         self.settings_location = QtWidgets.QLabel()
         self.settings_location.setObjectName("mutedText")
         self.settings_location.setWordWrap(True)
-        behavior_layout.addWidget(self.settings_location)
+        settings_row_layout.addWidget(self.settings_location, 1)
+        self.open_settings_folder_btn = QtWidgets.QToolButton()
+        self.open_settings_folder_btn.setObjectName("openSettingsFolderButton")
+        self.open_settings_folder_btn.setIcon(_svg_icon("folder", "#2f76e8", 18))
+        self.open_settings_folder_btn.setIconSize(QtCore.QSize(18, 18))
+        self.open_settings_folder_btn.setToolTip("Open settings folder")
+        self.open_settings_folder_btn.setAccessibleName("Open settings folder")
+        settings_row_layout.addWidget(self.open_settings_folder_btn, 0, QtCore.Qt.AlignTop)
+        behavior_layout.addWidget(settings_row)
         self.restart_explainer = QtWidgets.QLabel(
             "Host, port, model defaults and profile edits are written atomically. Host/port changes apply after Restart; subtitle and language defaults apply to the next capture."
         )
@@ -716,9 +718,41 @@ class MainWindow(QtWidgets.QMainWindow):
         behavior_layout.addWidget(self.restart_explainer)
         layout.addWidget(behavior)
 
+        storage = self._card("Model storage")
+        storage_layout = storage.layout()
+        storage_help = QtWidgets.QLabel(
+            "One location for downloaded model assets. Whisper weights use Speech models; "
+            "the built-in local translation runtime uses Local Translation Models."
+        )
+        storage_help.setObjectName("mutedText")
+        storage_help.setWordWrap(True)
+        storage_layout.addWidget(storage_help)
+        storage_row = QtWidgets.QWidget()
+        storage_row_layout = QtWidgets.QHBoxLayout(storage_row)
+        storage_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.model_cache_input = QtWidgets.QLineEdit()
+        self.model_cache_input.setPlaceholderText(str(config_manager.get_default_model_storage_dir()))
+        self.model_cache_input.setAccessibleName("Model storage directory")
+        self.model_cache_btn = QtWidgets.QPushButton("Browse")
+        storage_row_layout.addWidget(self.model_cache_input, 1)
+        storage_row_layout.addWidget(self.model_cache_btn)
+        storage_layout.addWidget(storage_row)
+        self.model_storage_paths = QtWidgets.QLabel()
+        self.model_storage_paths.setObjectName("mutedText")
+        self.model_storage_paths.setWordWrap(True)
+        storage_layout.addWidget(self.model_storage_paths)
+        layout.addWidget(storage)
+
+        self.open_settings_folder_btn.clicked.connect(self._open_settings_folder)
+        self.model_cache_btn.clicked.connect(self._browse_model_dir)
+        self.model_cache_input.editingFinished.connect(self._model_storage_changed)
+
         about = self._card("About")
         about_layout = about.layout()
-        about_text = QtWidgets.QLabel("STT Backend Control · PySide6 desktop utility\nHealth-aware local service management with shared profile settings.")
+        about_text = QtWidgets.QLabel(
+            "Live Subtitle · desktop control app\n"
+            "Turn browser audio into live captions with optional translation."
+        )
         about_text.setObjectName("mutedText")
         about_layout.addWidget(about_text)
         layout.addWidget(about)
@@ -739,10 +773,10 @@ class MainWindow(QtWidgets.QMainWindow):
         label = next((label for label, item_key in self.NAV_ITEMS if item_key == key), "Server")
         subtitles = {
             "Server": "Start and manage the local STT backend.",
-            "Local translation": "Install optional local translation runtimes and keep their files managed.",
+            "Local translation": "On-device runtime · download GGUF models and run them with the built-in llama.cpp service.",
             "STT models": "Choose defaults and manage downloaded speech recognition weights.",
             "Tuning": "Shape subtitle cleanup and stability for the next capture.",
-            "Translation services": "Add and manage your translation services.",
+            "Translation services": "Provider profiles · configure service connections and legacy adapters; managed llama.cpp files live under Local translation.",
             "Settings": "Appearance, persistence and lifecycle preferences.",
         }
         notices = {
@@ -1089,7 +1123,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             QtCore.QTimer.singleShot(0, self.hide)
             self.tray.showMessage(
-                "STT Backend",
+                "Live Subtitle",
                 "Minimized to tray",
                 QtWidgets.QSystemTrayIcon.Information,
                 1500,
@@ -1310,21 +1344,85 @@ class MainWindow(QtWidgets.QMainWindow):
     def _browse_model_dir(self) -> None:
         start_dir = self.model_cache_input.text().strip()
         if not start_dir:
-            start_dir = str(config_manager.get_default_model_dir())
+            start_dir = str(config_manager.get_default_model_storage_dir())
         path = QtWidgets.QFileDialog.getExistingDirectory(
             self,
-            "Select model cache directory",
+            "Select model storage directory",
             start_dir,
         )
         if path:
             self.model_cache_input.setText(path)
-            self._refresh_model_list()
+            self._model_storage_changed()
+
+    def _open_settings_folder(self) -> None:
+        folder = self.config_path.parent
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._show_notice(f"Could not create settings folder: {exc}", "error")
+            return
+        if not QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder))):
+            self._show_notice(f"Could not open settings folder: {folder}", "error")
+
+    def _model_storage_root_from_config(self, cfg: Dict[str, Any]) -> Path:
+        storage = cfg.get("models") if isinstance(cfg.get("models"), dict) else {}
+        configured = str(storage.get("root") or "").strip()
+        if configured:
+            return Path(configured).expanduser()
+
+        stt = cfg.get("stt") if isinstance(cfg.get("stt"), dict) else {}
+        stt_dir = str(stt.get("model_cache_dir") or "").strip()
+        if stt_dir:
+            path = Path(stt_dir).expanduser()
+            if path.name.casefold() in {
+                config_manager.SPEECH_MODELS_DIR_NAME.casefold(),
+                "models",
+            }:
+                return path.parent
+
+        local = cfg.get("local_llama") if isinstance(cfg.get("local_llama"), dict) else {}
+        local_dir = str(local.get("root") or "").strip()
+        if local_dir:
+            path = Path(local_dir).expanduser()
+            if path.name.casefold() in {
+                config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME.casefold(),
+                "managed-models",
+            }:
+                return path.parent
+
+        # An explicitly supplied config path keeps tests and portable builds
+        # self-contained; the production config lives in the default app dir.
+        return self.config_path.parent
+
+    def _get_model_storage_root(self) -> Path:
+        configured = self.model_cache_input.text().strip()
+        return Path(configured).expanduser() if configured else config_manager.get_default_model_storage_dir()
 
     def _get_model_dir(self) -> Path:
-        cache_dir = self.model_cache_input.text().strip()
-        if cache_dir:
-            return Path(cache_dir)
-        return config_manager.get_default_model_dir()
+        return (
+            self._get_model_storage_root()
+            / config_manager.SPEECH_MODELS_DIR_NAME
+        )
+
+    def _get_local_model_root(self) -> Path:
+        return (
+            self._get_model_storage_root()
+            / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME
+        )
+
+    def _update_model_storage_paths(self) -> None:
+        root = self._get_model_storage_root()
+        self.model_storage_paths.setText(
+            f"Speech models: {root / config_manager.SPEECH_MODELS_DIR_NAME}\n"
+            f"Local translation models: "
+            f"{root / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME}"
+        )
+
+    def _model_storage_changed(self) -> None:
+        self.local_models.set_root(self._get_local_model_root())
+        self._update_model_storage_paths()
+        self._refresh_model_list()
+        self._mark_dirty()
 
     def _scan_model_dir(self, model_dir: Path) -> Dict[str, Path]:
         if not model_dir.exists():
@@ -1482,12 +1580,15 @@ class MainWindow(QtWidgets.QMainWindow):
         cfg["server"] = dict(cfg.get("server") or {})
         cfg["stt"] = dict(cfg.get("stt") or {})
         cfg["subtitle"] = dict(cfg.get("subtitle") or {})
+        cfg["models"] = dict(cfg.get("models") or {})
 
         cfg["server"]["host"] = self.host_input.text().strip() or "127.0.0.1"
         cfg["server"]["port"] = int(self.port_input.value())
 
         cfg["stt"].pop("simulstreaming", None)
-        model_dir = self._get_model_dir()
+        storage_root = self._get_model_storage_root()
+        model_dir = storage_root / config_manager.SPEECH_MODELS_DIR_NAME
+        cfg["models"]["root"] = str(storage_root)
         cfg["stt"]["model_cache_dir"] = str(model_dir)
         cfg["stt"].pop("model_path", None)
         cfg["stt"]["model"] = self.model_select_combo.currentData() or "medium"
@@ -1519,7 +1620,14 @@ class MainWindow(QtWidgets.QMainWindow):
         cfg["gui"]["theme"] = self._theme_mode()
         cfg = self.service_catalog.collect_into_config(cfg)
         cfg = self.vllm_settings.collect_into_config(cfg)
-        return self.local_models.collect_into_config(cfg)
+        self.local_models.set_root(
+            storage_root / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME
+        )
+        cfg = self.local_models.collect_into_config(cfg)
+        cfg.setdefault("local_llama", {})["root"] = str(
+            storage_root / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME
+        )
+        return cfg
 
     def _load_config_into_ui(self, cfg: Dict[str, Any]) -> None:
         self._loading_ui = True
@@ -1539,19 +1647,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
         stt_cfg = cfg.get("stt", {})
         model_path = stt_cfg.get("model_path")
-        model_cache_dir = stt_cfg.get("model_cache_dir")
         selected_model = stt_cfg.get("model", "medium")
         if model_path:
             try:
                 selected_model = Path(model_path).stem
-                if not model_cache_dir:
-                    model_cache_dir = str(Path(model_path).parent)
             except OSError:
                 pass
-        if model_cache_dir:
-            self.model_cache_input.setText(str(model_cache_dir))
-        else:
-            self.model_cache_input.setText(str(config_manager.get_default_model_dir()))
+        storage_root = self._model_storage_root_from_config(cfg)
+        self.model_cache_input.setText(str(storage_root))
+        self.local_models.set_root(
+            storage_root / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME
+        )
+        self._update_model_storage_paths()
         self._refresh_model_list(selected_model)
         model_index = next(
             (i for i in range(self.model_select_combo.count()) if self.model_select_combo.itemData(i) == selected_model),

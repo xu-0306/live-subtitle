@@ -177,11 +177,12 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         header = QtWidgets.QFrame()
         header.setObjectName("pageHeaderCard")
         header_layout = QtWidgets.QVBoxLayout(header)
-        title = QtWidgets.QLabel("Service catalogue")
+        title = QtWidgets.QLabel("Service connections")
         title.setObjectName("cardTitle")
         subtitle = QtWidgets.QLabel(
-            "Add and manage your translation services. Imported API, Ollama, "
-            "NLLB and vLLM profiles stay in one catalogue."
+            "PROFILES · CONFIGURATION ONLY\n"
+            "Configure cloud or self-hosted connections such as APIs, Ollama and vLLM, plus legacy NLLB adapters. "
+            "Managed llama.cpp downloads and on-device model files stay under Local translation."
         )
         subtitle.setObjectName("mutedText")
         subtitle.setWordWrap(True)
@@ -190,7 +191,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         root.addWidget(header)
 
         toolbar = QtWidgets.QHBoxLayout()
-        self.catalog_status = QtWidgets.QLabel("Local catalogue")
+        self.catalog_status = QtWidgets.QLabel("Connections & adapters")
         self.catalog_status.setObjectName("statusBadge")
         toolbar.addWidget(self.catalog_status)
         toolbar.addStretch(1)

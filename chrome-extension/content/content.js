@@ -957,5 +957,5 @@
 
   // Overlay is created on-demand when the first subtitle/status arrives.
 
-  console.log("[STT Subtitle] Content script loaded");
+  console.log("[Live Subtitle] Content script loaded");
 })();

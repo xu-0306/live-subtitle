@@ -104,7 +104,7 @@ def download_artifact(artifact: Artifact, folder: Path, cancel: threading.Event,
     if shutil.disk_usage(folder).free < artifact.size - offset + 64 * 1024 * 1024:
         raise RuntimeError('Not enough free disk space for this download.')
     if offset < artifact.size:
-        headers = {'User-Agent': 'STT-Subtitle-Capture', 'Accept-Encoding': 'identity'}
+        headers = {'User-Agent': 'Live-Subtitle', 'Accept-Encoding': 'identity'}
         if offset:
             headers['Range'] = f'bytes={offset}-'
         request = urllib.request.Request(artifact.url, headers=headers)

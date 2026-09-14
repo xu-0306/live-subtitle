@@ -45,11 +45,11 @@ class VllmSettingsWidget(QtWidgets.QWidget):
         header_layout = QtWidgets.QVBoxLayout(header)
         eyebrow = QtWidgets.QLabel("TRANSLATION INFERENCE")
         eyebrow.setObjectName("eyebrow")
-        title = QtWidgets.QLabel("Translation services")
+        title = QtWidgets.QLabel("vLLM launch helper")
         title.setObjectName("sectionTitle")
         subtitle = QtWidgets.QLabel(
-            "Save cloud or self-hosted API connections here, then select a service in the browser extension. "
-            "Saving a profile does not start translation."
+            "Advanced command settings for a separately hosted vLLM endpoint. "
+            "Saving this helper does not download a model or start translation."
         )
         subtitle.setObjectName("mutedText")
         subtitle.setWordWrap(True)

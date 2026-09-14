@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import (
 )
 
 
+# Live Subtitle ships the desktop controller and its backend in one folder.
 ROOT = Path(SPECPATH)
 
 whisper_datas = collect_data_files("whisperlivekit")
@@ -64,7 +65,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="stt-gui",
+    name="live-subtitle",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -84,5 +85,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="stt-gui",
+    name="live-subtitle",
 )

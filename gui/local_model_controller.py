@@ -10,6 +10,7 @@ from PySide6 import QtCore, QtWidgets
 
 from backend.local_catalog import MODELS, RUNTIMES, get_model, list_models, resolve_hf_model
 from backend.local_runtime import Cancelled, ManagedRuntime, detect_hardware, preflight, prepare_install
+from gui import config_manager
 from gui._local_model_form import build_form
 
 
@@ -120,6 +121,18 @@ class LocalModelController(QtCore.QObject):
         if self.busy or self.runtime.alive():
             return
         local = cfg.get('local_llama', {})
+        storage = cfg.get('models') if isinstance(cfg.get('models'), dict) else {}
+        storage_root = str(storage.get('root') or '').strip()
+        configured_root = (
+            str(
+                Path(storage_root).expanduser()
+                / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME
+            )
+            if storage_root
+            else str(local.get('root') or '').strip()
+        )
+        if configured_root:
+            self.root = Path(configured_root).expanduser()
         for key, default in [('context', 2048), ('gpu_layers', -1), ('port', 18080)]:
             try:
                 self.controls[key].setValue(int(local.get(key, default)))
@@ -135,6 +148,14 @@ class LocalModelController(QtCore.QObject):
                 self.controls[key].setEditText(str(value))
         self._set_busy(False)
 
+    def set_root(self, root: Path) -> bool:
+        """Point future downloads at the shared model-storage location."""
+
+        if self.busy or self.runtime.alive():
+            return False
+        self.root = Path(root)
+        return True
+
     @property
     def busy(self) -> bool:
         return self.worker is not None
@@ -146,6 +167,7 @@ class LocalModelController(QtCore.QObject):
         kind = 'windows-cpu' if self.controls['gpu_layers'].value() == 0 else 'windows-cuda'
         runtime_size = sum(a.size for a in RUNTIMES[kind])
         self.controls['details'].setText(
+            'ON-DEVICE · MANAGED RUNTIME\n'
             f'Model: {model.size / 1024**3:.2f} GiB · execution components: {runtime_size / 1024**2:.0f} MiB on first use. '
             f'{model.license}. Runs locally; model files come from {model.repo}. '
             'Quality depends on language and content. Download includes all required GGUF parts. ' + model.notes

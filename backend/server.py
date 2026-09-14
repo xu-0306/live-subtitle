@@ -55,7 +55,7 @@ try:
         load_snapshot,
         server_id_for_config,
     )
-    from .config import load_config, _default_app_dir
+    from .config import LOCAL_TRANSLATION_MODELS_DIR_NAME, load_config, _default_app_dir
     from .translation_service import TranslationService
     from .translation_scheduler import TranslationScheduler
     from .translator import build_translator, describe_translation_target
@@ -63,7 +63,7 @@ except ImportError:  # Fallback when running as a script.
     import model_manager
     from cache import LRUCache
     from config_store import RevisionConflictError, import_profiles, load_snapshot, server_id_for_config
-    from config import load_config, _default_app_dir
+    from config import LOCAL_TRANSLATION_MODELS_DIR_NAME, load_config, _default_app_dir
     from translation_service import TranslationService
     from translation_scheduler import TranslationScheduler
     from translator import build_translator, describe_translation_target
@@ -1304,7 +1304,10 @@ async def lifespan(app: FastAPI):
                 pass
         return load_config(), None
 
-    managed_root = Path(cfg.get('local_llama', {}).get('root') or (_default_app_dir() / 'managed-models'))
+    managed_root = Path(
+        cfg.get('local_llama', {}).get('root')
+        or (_default_app_dir() / LOCAL_TRANSLATION_MODELS_DIR_NAME)
+    )
     app.state.translation_service = TranslationService(
         lambda: current_config_snapshot()[0],
         managed_root,

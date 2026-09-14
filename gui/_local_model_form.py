@@ -25,7 +25,11 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
 
     layout = QVBoxLayout(parent)
 
-    details = QLabel("Download local models here, then select one in the browser extension.")
+    details = QLabel(
+        "ON-DEVICE · MANAGED RUNTIME\n"
+        "Download local GGUF models and the built-in llama.cpp runtime here, then select a model in the browser extension. "
+        "No provider account or API endpoint is required."
+    )
     details.setObjectName("details")
     details.setWordWrap(True)
     details.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)

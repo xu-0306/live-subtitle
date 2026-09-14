@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "STT Subtitle Capture",
+  "name": "Live Subtitle",
   "version": "0.1.0",
-  "description": "Capture tab audio and stream PCM to a local STT server.",
+  "description": "Turn tab audio into live subtitles with optional translation through a local backend.",
   "permissions": ["tabCapture", "activeTab", "offscreen", "storage", "scripting"],
   "host_permissions": ["<all_urls>"],
   "options_page": "options/options.html",

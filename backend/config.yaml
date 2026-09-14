@@ -4,6 +4,9 @@ server:
   host: "127.0.0.1"
   port: 8765
 
+models:
+  root: "" # shared storage root; GUI derives Speech models/ and Local Translation Models/ beneath it
+
 stt:
   model: "medium" # tiny, base, small, medium, large-v3
   model_cache_dir: "" # optional; leave empty to use the default cache directory
@@ -43,9 +46,9 @@ translation:
     host: "http://localhost:11434"
     keep_alive: "5m"
   openai:
-    model: "gpt-5.3-codex-spark"
+    model: "gpt-4o-mini"
     api_key: ""
-    base_url: "https://co.yes.vg/v1/chat/completions" # full endpoint or provider base URL
+    base_url: "https://api.openai.com/v1" # provider base URL or complete API endpoint
     api_type: "chat_completions" # chat_completions, responses, messages
     auto_complete_endpoint: true # false uses the entered URL without appending an endpoint
   vllm:
