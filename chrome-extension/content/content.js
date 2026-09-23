@@ -6,6 +6,7 @@
   window.__sttSubtitleInjected = true;
 
   const HIDE_DELAY_MS = 0; // Keep the last subtitle visible until the next utterance starts.
+  const OVERLAY_FADE_OUT_MS = 220; // Keep in sync with the opacity transition in content.css.
   const SILENCE_CLEAR_MS = 2500; // Gap between updates to start a new utterance.
   const MAX_ORIGINAL_CHARS = 260;
   const MAX_TRANSLATED_CHARS = 260;
@@ -17,7 +18,7 @@
   const MAX_SENTENCES_DEFAULT = 2;
   const MAX_SENTENCES_CJK = 1;
   const SENTENCE_ENDINGS = new Set([".", "!", "?", "。", "！", "？", "…"]);
-  const CJK_REGEX = /[\\u4e00-\\u9fff\\u3040-\\u30ff\\u31f0-\\u31ff]/;
+  const CJK_REGEX = /[\u4e00-\u9fff\u3040-\u30ff\u31f0-\u31ff]/;
   const POSITION_STORAGE_KEY = "sttSubtitleOverlayPosition";
   const SIZE_STORAGE_KEY = "sttSubtitleOverlaySize";
   const DEFAULT_OVERLAY_WIDTH = 640;
@@ -46,6 +47,8 @@
   let translatedEl = null;
   let statusEl = null;
   let hideTimer = null;
+  let removeTimer = null;
+  let captureStopped = false;
   let fullscreenListenerAttached = false;
   let dragHandlersAttached = false;
   let dragState = null;
@@ -62,6 +65,7 @@
   let overlayOpacity = DEFAULT_OVERLAY_OPACITY;
   let overlayOpacityLoaded = false;
   let lastSeq = 0;
+  let lastFinalSeq = 0;
   let maxHistoryLines = DEFAULT_HISTORY_LINES;
   let showPartialLine = true;
   let historySettingsLoaded = false;
@@ -191,12 +195,16 @@
     translatedEl.innerHTML = "";
 
     const lines = historyLines.slice(-maxHistoryLines);
+    const hasVisiblePartial = Boolean(showPartialLine && partialLine);
     const hasTranslations =
       lines.some((line) => line.translated) ||
-      (showPartialLine && partialLine && partialLine.translated);
+      (hasVisiblePartial && partialLine.translated);
 
     lines.forEach((line, index) => {
-      const isHistory = index < lines.length - 1;
+      // Once a live partial exists, every committed line is history.  The
+      // partial is the user's current reading focus and must receive the
+      // strongest emphasis until it is replaced by its final revision.
+      const isHistory = index < lines.length - 1 || hasVisiblePartial;
       const lineClass = `stt-line stt-line-final${isHistory ? " stt-line-history" : ""}`;
       originalEl.appendChild(buildLineElement(line.original, lineClass, false));
       if (hasTranslations) {
@@ -204,7 +212,7 @@
       }
     });
 
-    if (showPartialLine && partialLine) {
+    if (hasVisiblePartial) {
       const lineClass = "stt-line stt-line-partial";
       originalEl.appendChild(buildLineElement(partialLine.original, lineClass, false));
       if (hasTranslations) {
@@ -757,6 +765,10 @@
 
   function showOverlay() {
     if (!overlayEl) createOverlay();
+    if (removeTimer) {
+      clearTimeout(removeTimer);
+      removeTimer = null;
+    }
     overlayEl.classList.add("visible");
     overlayEl.style.setProperty("pointer-events", "auto", "important");
 
@@ -793,6 +805,20 @@
     const now = Date.now();
     const originalText = original || "";
     const translatedText = translated || "";
+    const seqNumeric = normalizeSeq(seq);
+    const finalFlag = isFinal === undefined ? true : Boolean(isFinal);
+
+    // A response for an older chunk must never arrive after a newer chunk and
+    // append a second history row or clear the current overlay.  Same-seq
+    // updates remain valid because translation and original text are allowed
+    // to arrive as separate upserts.
+    const knownSeq = seqNumeric !== null && (
+      historyLines.some((line) => line.seq === seqNumeric) ||
+      (partialLine && partialLine.seq === seqNumeric)
+    );
+    if (finalFlag && seqNumeric !== null && seqNumeric < lastFinalSeq && !knownSeq) {
+      return;
+    }
     const silenceGap = lastSubtitleTs && now - lastSubtitleTs > SILENCE_CLEAR_MS;
     lastSubtitleTs = now;
 
@@ -800,7 +826,10 @@
       originalText.length > MAX_ORIGINAL_CHARS ||
       translatedText.length > MAX_TRANSLATED_CHARS;
 
-    if (silenceGap || lengthExceeded) {
+    // A delayed translation for an existing row may repeat the long original
+    // text.  It is an upsert, not a new boundary, and must not clear newer
+    // history merely because it arrives late or exceeds the compact limit.
+    if (!knownSeq && (silenceGap || lengthExceeded)) {
       clearSubtitleText();
     }
 
@@ -811,13 +840,14 @@
       return;
     }
 
-    const seqNumeric = normalizeSeq(seq);
     if (seqNumeric !== null && seqNumeric > lastSeq) {
       lastSeq = seqNumeric;
     }
 
-    const finalFlag = isFinal === undefined ? true : Boolean(isFinal);
     if (finalFlag) {
+      if (seqNumeric !== null && seqNumeric > lastFinalSeq) {
+        lastFinalSeq = seqNumeric;
+      }
       if (seqNumeric !== null && partialLine && partialLine.seq === seqNumeric) {
         partialLine = null;
       }
@@ -861,21 +891,33 @@
     }
   }
 
+  function resetSubtitleState() {
+    lastSeq = 0;
+    lastFinalSeq = 0;
+    historyLines = [];
+    partialLine = null;
+    lastSubtitleTs = 0;
+  }
+
   function removeOverlay() {
     if (overlayEl && overlayEl.parentNode) {
       overlayEl.parentNode.removeChild(overlayEl);
+    }
+    if (overlayEl) {
       overlayEl = null;
       cardEl = null;
       originalEl = null;
       translatedEl = null;
       statusEl = null;
     }
-    lastSeq = 0;
-    historyLines = [];
-    partialLine = null;
+    resetSubtitleState();
     if (hideTimer) {
       clearTimeout(hideTimer);
       hideTimer = null;
+    }
+    if (removeTimer) {
+      clearTimeout(removeTimer);
+      removeTimer = null;
     }
     if (resizeObserver) {
       resizeObserver.disconnect();
@@ -887,11 +929,46 @@
     }
   }
 
+  function fadeOutOverlay() {
+    captureStopped = true;
+    resetSubtitleState();
+    hideOverlay();
+    if (removeTimer) {
+      clearTimeout(removeTimer);
+    }
+    if (!overlayEl) {
+      removeTimer = null;
+      return;
+    }
+    removeTimer = setTimeout(() => {
+      removeTimer = null;
+      removeOverlay();
+    }, OVERLAY_FADE_OUT_MS);
+  }
+
+  function beginCapture() {
+    captureStopped = false;
+    if (removeTimer) {
+      clearTimeout(removeTimer);
+      removeTimer = null;
+    }
+  }
+
   // 監聽來自 background.js 的訊息
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log("[content] Received message:", message.type, message.original?.slice(0, 30) || message.message || "");
 
+    if (message.type === "subtitle-start") {
+      beginCapture();
+      sendResponse({ ok: true });
+      return true;
+    }
+
     if (message.type === "subtitle") {
+      if (captureStopped) {
+        sendResponse({ ok: true, ignored: true });
+        return true;
+      }
       console.log("[content] Updating subtitle - original:", message.original?.slice(0, 50), "translated:", message.translated?.slice(0, 50));
       updateSubtitle(message.original, message.translated, message.seq, message.final);
       sendResponse({ ok: true });
@@ -899,6 +976,10 @@
     }
 
     if (message.type === "subtitle-status") {
+      if (captureStopped) {
+        sendResponse({ ok: true, ignored: true });
+        return true;
+      }
       updateStatus(message.message);
       sendResponse({ ok: true });
       return true;
@@ -911,7 +992,7 @@
     }
 
     if (message.type === "subtitle-remove") {
-      removeOverlay();
+      fadeOutOverlay();
       sendResponse({ ok: true });
       return true;
     }

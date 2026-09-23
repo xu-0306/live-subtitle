@@ -1,0 +1,111 @@
+TAP version 13
+# Subtest: desktop default survives JSON transport without a translation override
+ok 1 - desktop default survives JSON transport without a translation override
+  ---
+  duration_ms: 1.07
+  type: 'test'
+  ...
+# Subtest: API profiles share the backend lease with local models
+ok 2 - API profiles share the backend lease with local models
+  ---
+  duration_ms: 0.1175
+  type: 'test'
+  ...
+# Subtest: v2 keeps inherited defaults sparse and carries unseen explicit model/language choices
+ok 3 - v2 keeps inherited defaults sparse and carries unseen explicit model/language choices
+  ---
+  duration_ms: 0.228
+  type: 'test'
+  ...
+# Subtest: popup and options load the shared producer exactly once before its consumer
+ok 4 - popup and options load the shared producer exactly once before its consumer
+  ---
+  duration_ms: 0.9613
+  type: 'test'
+  ...
+# Subtest: v2 normalization strips secrets and requires persistent server identity
+ok 5 - v2 normalization strips secrets and requires persistent server identity
+  ---
+  duration_ms: 1.7528
+  type: 'test'
+  ...
+# Subtest: cache is partitioned by URL and server instance
+ok 6 - cache is partitioned by URL and server instance
+  ---
+  duration_ms: 0.7086
+  type: 'test'
+  ...
+# Subtest: legacy response is upgrade-needed, while a stale cache remains available
+ok 7 - legacy response is upgrade-needed, while a stale cache remains available
+  ---
+  duration_ms: 0.0958
+  type: 'test'
+  ...
+# Subtest: catalog client ignores an older refresh result
+ok 8 - catalog client ignores an older refresh result
+  ---
+  duration_ms: 1.1777
+  type: 'test'
+  ...
+# connection-settings tests passed
+# Subtest: chrome-extension\\tests\\connection-settings.test.js
+ok 3 - chrome-extension\\tests\\connection-settings.test.js
+  ---
+  duration_ms: 38.5098
+  type: 'test'
+  ...
+# Subtest: successful import switches selection only after backend acknowledgement and keeps backup secret-free
+ok 10 - successful import switches selection only after backend acknowledgement and keeps backup secret-free
+  ---
+  duration_ms: 1.6213
+  type: 'test'
+  ...
+# Subtest: secure-store read failure preserves the profile for retry and sends no empty credential
+ok 11 - secure-store read failure preserves the profile for retry and sends no empty credential
+  ---
+  duration_ms: 0.2286
+  type: 'test'
+  ...
+# Subtest: partial acknowledgement keeps failed profiles pending and maps only acknowledged ids
+ok 12 - partial acknowledgement keeps failed profiles pending and maps only acknowledged ids
+  ---
+  duration_ms: 1.0373
+  type: 'test'
+  ...
+# Subtest: retries only pending profiles and keeps completion stable across backend restarts
+ok 13 - retries only pending profiles and keeps completion stable across backend restarts
+  ---
+  duration_ms: 0.4994
+  type: 'test'
+  ...
+# Subtest: sanitizes nested legacy connection fields before backup
+ok 14 - sanitizes nested legacy connection fields before backup
+  ---
+  duration_ms: 0.1502
+  type: 'test'
+  ...
+# Subtest: popup keeps the action dock pinned while the content scrolls
+ok 15 - popup keeps the action dock pinned while the content scrolls
+  ---
+  duration_ms: 566.9716
+  type: 'test'
+  ...
+# [offscreen] audio monitor init error: AudioContext is not a constructor
+# [offscreen] audio monitor init error: AudioContext is not a constructor
+# Actual popup -> background -> offscreen -> WebSocket routing passed for custom local and cloud models, arbitrary language, and zh-CN preservation.
+# Subtest: chrome-extension\\tests\\translation-routing.test.js
+ok 6 - chrome-extension\\tests\\translation-routing.test.js
+  ---
+  duration_ms: 1070.2356
+  type: 'test'
+  ...
+1..16
+# tests 16
+# suites 0
+# pass 16
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1097.8335
+

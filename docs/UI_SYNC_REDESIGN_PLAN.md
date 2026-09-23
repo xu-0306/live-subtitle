@@ -73,7 +73,7 @@
 
 主要程式入口：
 
-- GUI：[app.py](../gui/app.py)、[backend_runner.py](../gui/backend_runner.py)、[config_manager.py](../gui/config_manager.py)、[vllm_settings.py](../gui/vllm_settings.py)、[_local_model_form.py](../gui/_local_model_form.py)。
+- GUI：[app.py](../gui/app.py)、[backend_runner.py](../gui/backend_runner.py)、[config_manager.py](../gui/config_manager.py)、[service_catalog_widget.py](../gui/service_catalog_widget.py)、[_local_model_form.py](../gui/_local_model_form.py)。
 - 後端：[server.py](../backend/server.py)、[translation_service.py](../backend/translation_service.py)、[model_manager.py](../backend/model_manager.py)、[local_catalog.py](../backend/local_catalog.py)。
 - 擴充功能：[popup.js](../chrome-extension/popup/popup.js)、[popup.html](../chrome-extension/popup/popup.html)、[popup.css](../chrome-extension/popup/popup.css)、[options.html](../chrome-extension/options/options.html)、[background.js](../chrome-extension/background/background.js)、[offscreen.js](../chrome-extension/offscreen/offscreen.js)。
 
@@ -133,7 +133,7 @@
 
 - [x] **D-01 視覺與導覽**：保留 PySide6，導入側欄與內容頁，統一 Server、STT models、Local translation、Translation services、進階調整與 Settings 的版面。加入 Light／Dark／System 與偏好保存，System 模式回應系統變更。
 - [x] **D-02 Server 與服務狀態**：以連線卡片、主要控制列、狀態摘要呈現；詳細錯誤可展開，提供複製連線位址與開啟日誌。狀態來源使用 C 階段契約，不以裝飾文字代替。
-- [x] **D-03 管理頁與保存流程**：模型顯示下載／已安裝／可選／使用中等狀態；服務提供新增、編輯、測試及移除。按服務類型呈現相關欄位，vLLM helper 與進階參數收合；顯示未儲存與生效提示，Reset 說明影響範圍。
+- [x] **D-03 管理頁與保存流程**：模型顯示下載／已安裝／可選／使用中等狀態；服務提供新增、編輯、測試及移除。按服務類型呈現相關欄位，進階資料收合；顯示未儲存與生效提示，Reset 說明影響範圍。2026-09-23 已移除 vLLM launch helper、重複編輯器與其巢狀捲動區，舊實作封存於 `legacy/vllm-launch-helper/`。
 - [ ] **D-04 尺寸、鍵盤與既有行為**：處理 900×640、較大視窗與 Windows 125%／150% 縮放，頁面可捲動、按鈕不裁切。確認 Tab 焦點、停用狀態、托盤、關閉與重啟行為。
 
 驗收：所有主要頁面在兩種佈景都有實際 Qt 截圖；切換與重開可保留偏好。主要／次要／危險操作可辨識，下載取消、模型匯入與保存仍可用。檢視參考圖相似度以導覽、資訊層級與色彩為準，不要求逐像素複製。
@@ -187,7 +187,7 @@
 既有回歸命令（實作時先確認可用 Python／Node 路徑）：
 
 ```text
-rtk proxy python -X utf8 -m pytest tests backend/tests gui/test_vllm_profiles.py -q -p no:cacheprovider --basetemp .work/pytest-ui-sync-redesign
+rtk proxy python -X utf8 -m pytest tests backend/tests -q -p no:cacheprovider --basetemp .work/pytest-ui-sync-redesign
 rtk proxy node --test chrome-extension/tests/*.test.js
 rtk proxy git diff --check
 ```

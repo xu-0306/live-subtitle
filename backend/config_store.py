@@ -7,8 +7,8 @@ but adds an optimistic revision sidecar so a stale GUI snapshot cannot erase a
 profile imported by the extension.
 
 ``translation.service_profiles`` is the normalized profile format.  Legacy
-``translation.vllm.profiles`` entries remain readable and writable through an
-adapter; they are never silently reinterpreted as Ollama or NLLB settings.
+``translation.vllm.profiles`` entries are read as ordinary compatible API
+connections; retired launch settings are not part of the canonical profile.
 Secrets are accepted by the storage layer because an import may migrate an
 authenticated profile, but callers must use :func:`public_profile` when
 building a catalog.
@@ -482,6 +482,24 @@ def normalize_service_profile(
         if isinstance(profile.get(key), Mapping):
             options.setdefault(key, copy.deepcopy(dict(profile[key])))
     normalized["options"] = options
+    if engine == "vllm":
+        # The retired desktop helper used `model` for a local weights path
+        # and `served_model` for the HTTP model name. Preserve the latter.
+        normalized["engine"] = "openai_compatible"
+        normalized["kind"] = "api"
+        normalized["mode"] = "external"
+        normalized["model"] = _as_text(profile.get("served_model")) or normalized["model"]
+        normalized["base_url"] = endpoint or "http://127.0.0.1:8000/v1"
+        normalized["endpoint"] = normalized["base_url"]
+        normalized.pop("served_model", None)
+        normalized.pop("runtime", None)
+        normalized.pop("vllm", None)
+        options.pop("runtime", None)
+        provider = options.pop("vllm", None)
+        if isinstance(provider, Mapping):
+            provider = dict(provider)
+            provider.pop("runtime", None)
+            options.setdefault("openai_compatible", provider)
     if source:
         normalized.setdefault("source", source)
     return normalized
@@ -496,13 +514,16 @@ def _legacy_vllm_profiles(config: Mapping[str, Any]) -> list[dict[str, Any]]:
         return []
     raw = vllm.get("profiles")
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
-        return []
+        # The old HTTP adapter also accepted a single flat connection.
+        if not any(key in vllm for key in ("model", "served_model", "base_url")):
+            return []
+        raw = [{"id": _as_text(vllm.get("active_profile")) or "legacy-api", **dict(vllm)}]
     profiles: list[dict[str, Any]] = []
     for index, item in enumerate(raw):
         if not isinstance(item, Mapping):
             continue
         try:
-            # Explicitly preserve the vLLM adapter identity and fields.
+            # Keep the connection and stable ID, without the removed launcher.
             profile = normalize_service_profile({**dict(item), "engine": "vllm"}, index, source="legacy-vllm")
         except (TypeError, ValueError):
             continue

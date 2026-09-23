@@ -46,6 +46,7 @@ const elementIds = [
   "wsUrl",
   "translationModelSelect",
   "sttModelSizeSelect",
+  "sttSelectionHint",
   "startBtn",
   "stopBtn",
   "openSettingsBtn",
@@ -155,6 +156,18 @@ class FakeWebSocket {
 
   send(value) {
     this.sent.push(value);
+    if (typeof value === 'string' && JSON.parse(value).type === 'desktop_catalog') {
+      setImmediate(() => this.emit('message', {data: JSON.stringify({
+        type: 'desktop_catalog', version: 2, server_id: 'test-server', instance_id: 'test-instance', revision: 1,
+        models: [{id: 'local:future-custom-model', name: 'Unlisted model', engine: 'desktop', available: true, status: 'installed', selection: {kind: 'local', id: 'future-custom-model'}}],
+        stt_models: [
+          {id: 'small', name: 'Whisper small', available: true, status: 'installed', selection: {model: 'small'}},
+          {id: 'medium', name: 'Whisper medium', available: true, status: 'installed', selection: {model: 'medium'}},
+        ],
+        defaults: {stt: {model: 'medium'}, translation: {target_language: 'zh-TW', partial: false}},
+        active: {captures: 0}, capabilities: ['profile_import'],
+      })}));
+    }
     if (typeof value === 'string' && JSON.parse(value).type === 'translation_catalog') {
       setImmediate(() => this.emit('message', {data: JSON.stringify({type: 'translation_catalog', version: 1,
         models: [{id: 'local:future-custom-model', name: 'Unlisted model', engine: 'desktop', selection: {kind: 'local', id: 'future-custom-model'}}]})}));
@@ -339,8 +352,17 @@ async function main() {
   context.STTConnectionSettings = {...context.STTConnectionSettings, getApiKey: async () => ''};
   await waitForCondition(
     () => elements.get('desktopServicesStatus').textContent,
-    (value) => /1 desktop choices/.test(value),
+    (value) => /Synced.*1 services/.test(value),
     'desktop catalog',
+  );
+  elements.get('sttModelSizeSelect').value = 'small';
+  elements.get('sttModelSizeSelect').dispatch('change');
+  await waitForCondition(() => storage.selectedSttModel, 'small', 'speech model persistence');
+  await waitForCondition(() => storage.sttModelMode, 'override', 'speech override persistence');
+  assert.equal(
+    context.STTPopup.sttOptions().find((item) => item.id === 'small')?.available,
+    true,
+    JSON.stringify(context.STTPopup.sttOptions()),
   );
   elements.get('subtitleOriginalSize').value = '1.4';
   elements.get('subtitleOriginalSize').dispatch('input');
@@ -358,6 +380,7 @@ async function main() {
       if (typeof value !== 'string') return false;
       try { return JSON.parse(value).type === 'config'; } catch { return false; }
     }).length;
+    const captureEpochsBefore = tabMessages.filter((item) => item.message?.type === 'subtitle-start').length;
     elements.get('translationModelSelect').value = modelId;
     elements.get('translationModelSelect').dispatch('change');
     elements.get('translationLanguageSelect').value = language;
@@ -378,13 +401,18 @@ async function main() {
     );
     const popup = runtimeMessages.filter((m) => m.type === 'popup-start').at(-1);
     const offscreen = runtimeMessages.filter((m) => m.type === 'offscreen-start').at(-1);
+    assert.equal(
+      tabMessages.filter((item) => item.message?.type === 'subtitle-start').length,
+      captureEpochsBefore + 1,
+      'each capture must open a new overlay message epoch',
+    );
     assert.deepEqual(JSON.parse(JSON.stringify(popup.settings)), JSON.parse(JSON.stringify(offscreen.settings)));
     assert.equal(offscreen.settings.browserTranslation, undefined);
     const config = sockets.flatMap((s) => s.sent).filter((v) => typeof v === 'string')
       .map(JSON.parse).filter((p) => p.type === 'config').at(-1);
     assert.equal(config.translation.target_language, language, JSON.stringify({status: elements.get('status').textContent, messages: runtimeMessages.map(m => m.type)}));
     for (const [key, value] of Object.entries(expected)) assert.deepEqual(config.translation[key], value);
-    assert.equal(config.stt.model, 'medium');
+    assert.equal(config.stt.model, 'small');
     if (modelId === 'local:future-custom-model') {
       await waitForCondition(
         async () => {
@@ -426,6 +454,13 @@ async function main() {
       'Not capturing',
       'capture stop',
     );
+    const idleReconcileBefore = tabMessages.filter((item) => item.message?.type === 'subtitle-remove').length;
+    await context.STTPopup.refreshCaptureStatus();
+    await waitForCondition(
+      () => tabMessages.filter((item) => item.message?.type === 'subtitle-remove').length,
+      (value) => value > idleReconcileBefore,
+      'idle status must reconcile a stale overlay',
+    );
   }
   const configCountBeforeNavigation = sockets.flatMap((s) => s.sent).filter((value) => {
     if (typeof value !== 'string') return false;
@@ -450,6 +485,10 @@ async function main() {
   );
   assert.equal(runtimeMessages.filter((m) => m.type === 'popup-start').length, 3);
   assert.equal(storage.translationTargetLanguage, 'zh-CN', 'Simplified Chinese must not be rewritten');
+  elements.get('sttModelSizeSelect').value = '__desktop-default__';
+  elements.get('sttModelSizeSelect').dispatch('change');
+  await waitForCondition(() => storage.sttModelMode, 'inherit', 'desktop speech default persistence');
+  assert.equal(context.STTPopup.buildNextSettings({ id: 'none', engine: 'noop' }).stt, undefined);
   console.log('Actual popup -> background -> offscreen -> WebSocket routing passed for custom local and cloud models, arbitrary language, and zh-CN preservation.');
 }
 

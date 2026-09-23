@@ -1,6 +1,6 @@
 # 翻譯服務與模型選擇（2026-09-13）
 
-GUI 統一管理模型檔案、API 連線及桌面預設；擴充功能讀取後端清單，選擇下一次擷取使用的模型與語言。
+GUI 與擴充功能 Options 均可管理模型檔案、API 連線及桌面預設；Popup 讀取後端清單，選擇下一次擷取使用的模型與語言。
 下載模型或儲存雲端設定，都不代表開始推論。
 
 桌面 GUI 以職責區分兩個翻譯入口：**Local translation** 下載並管理本機 GGUF 與
@@ -13,15 +13,24 @@ GUI 統一管理模型檔案、API 連線及桌面預設；擴充功能讀取後
 `Local Translation Models\`。首次啟動會複製舊 `%APPDATA%\STT-TTS\config.yaml`，但不刪除舊目錄，
 也不重寫其中既有的模型路徑，因此不會強迫搬移或重新下載大型模型。
 
+全新設定首次啟動時，GUI 會用 `nvidia-smi` 偵測 NVIDIA GPU 的總顯存與目前可用顯存，
+以 Whisper 工作記憶體、GGUF 預估顯存、固定 1 GiB headroom 及額外比例緩衝共同推薦組合。
+8 GiB 以下不推薦 GPU 本機翻譯，改提供 CPU 小模型或外部翻譯服務路徑。助手只寫入預設值，
+不自動下載；翻譯模型經大小與 SHA256 驗證安裝後，才把待啟用建議發布為桌面預設。
+使用者可從 **Settings → Recommend model setup** 隨時重新偵測；結果是容量估計，不是延遲或品質 benchmark。
+
 ## 使用流程
 
-1. 更新後重啟 GUI，並在 `chrome://extensions` 重新載入擴充功能。
+1. 更新後重啟後端，並在 `chrome://extensions` 重新載入擴充功能。可只啟動後端而不開 GUI。
 2. 本機模型：在 **Local translation** 選擇模型，按 **Download model**。
    自訂模型可按 **Add Hugging Face GGUF…**，填入公開 repository 與 GGUF 檔案路徑。
    分片模型填任一片，程式會解析同組分片並下載完整檔案。
 3. 雲端／自架服務：在 **Translation services** 新增或編輯服務，填入 endpoint、
-   API key 與 model，按 **Save defaults**。API 類型等設定位於進階資料；原有 vLLM
-   啟動指令產生器保留為進階工具。需要沿用該服務時，勾選桌面預設選項。
+   API key 與 model，按 **Save defaults**。API 類型等設定位於進階資料。
+   需要沿用該服務時，勾選桌面預設選項。
+   擴充功能 Options 儲存 API 服務時會依序以 Chat completions、Responses、Messages
+   翻譯短句，保存第一種成功的格式；三種都失敗時不寫入設定並顯示連線錯誤。
+   新服務的識別碼由後端產生，Options 不要求使用者填寫。
 4. 啟動後端，待 GUI 顯示 **Ready**。擴充功能開啟時及保持開啟期間會同步清單，
    也可按清單旁的刷新圖示。STT 與翻譯模型都來自後端；未安裝或已移除的項目不可直接啟動。
    舊版擴充功能自行保存的 profiles 可在 Options 的匯入區塊移入桌面設定。
@@ -37,10 +46,11 @@ GUI 統一管理模型檔案、API 連線及桌面預設；擴充功能讀取後
 選單更動套用在下一次擷取，不會中途改變正在產生的字幕。
 **None** 僅做語音辨識，可與其他分頁的翻譯共存。
 
-GUI 與擴充功能各自提供 Light／Dark／System 主題並記住偏好。Popup 保留擷取操作，
-字幕大小、背景透明度、歷史行數及舊 profiles 匯入位於 Options。
+GUI 與擴充功能各自提供 Light／Dark／System 主題並記住偏好。Popup 保留擷取操作；
+Options 有獨立的模型與服務管理頁、桌面預設、字幕外觀及舊 profiles 匯入。
 GUI 顯示未儲存變更與生效時機；Host／Port 需重啟，服務與預設設定供新擷取使用。
 若設定已被另一個介面更新，過期的儲存會被拒絕，需重新載入後再編輯，避免覆蓋新服務。
+GUI 的表單未修改時每 2.5 秒載入共用設定檔的新 revision；未儲存的 GUI 表單不會被自動覆蓋。
 
 **Remove from extension choices** 取消模型在新擷取選單中的可用狀態，保留已下載檔案。
 已經啟動的擷取仍需按停止。這不是刪除權重功能。
@@ -108,8 +118,10 @@ flowchart TD
   `/health` 的程序識別必須符合 GUI 啟動的實例後才顯示 Ready；模型就緒另由擷取狀態回報。
 - `translation_service.py` 管理使用權及本機 runtime；同一模型不同語言共用同一個程序。
   切換檢查發生在載入 STT 前，啟動失敗／取消不保留使用權；停止也清理 translator cache。
-- 舊設定鍵 `translation.vllm` 與內部 engine 名稱暫時保留作為相容層。
-  UI 保存 profile 不再修改目前 engine。既有模型檔案無需重下。
+- vLLM launch helper 已移除，舊實作僅存於 `legacy/vllm-launch-helper/`，不參與執行或打包。
+  舊 profile 讀取為一般 OpenAI-compatible API，保留 ID、端點、HTTP 模型名稱與憑證，
+  移除啟動專用 runtime 參數；GUI 儲存後清除舊的重複設定區段並保留桌面預設選擇。
+  後端仍可讀取舊 headless HTTP 設定，但不提供 vLLM 部署或模型下載。既有模型檔案無需重下。
 - 本機 runtime 使用隨機程序 token，僅存在後端記憶體，不保存到設定、不傳給擴充功能。
   Windows Job Objects 將已啟動的 llama.cpp 綁定到後端生命週期；正常停止、GUI 關閉與後端被終止時，都會回收所屬程序。
 

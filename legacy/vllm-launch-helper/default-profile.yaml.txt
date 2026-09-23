@@ -1,0 +1,21 @@
+﻿  vllm:
+    active_profile: "local-default"
+    profiles:
+      - id: "local-default"
+        name: "Local vLLM"
+        mode: "local" # local runtime launch is managed by the desktop GUI, not this adapter
+        base_url: "http://127.0.0.1:8000"
+        api_key: ""
+        model: ""
+        served_model: ""
+        api_type: "chat_completions"
+        auto_complete_endpoint: true
+        max_concurrency: 4
+        runtime: # saved for a local launcher; the HTTP translation adapter does not apply it
+          max_model_len: 4096
+          max_num_seqs: 16
+          tensor_parallel_size: 1
+          gpu_memory_utilization: 0.9
+          dtype: "auto"
+          quantization: "auto"
+

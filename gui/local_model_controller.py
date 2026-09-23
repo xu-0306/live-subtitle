@@ -2,14 +2,29 @@
 from __future__ import annotations
 
 import copy
+import html
 import threading
 from dataclasses import asdict
 from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
-from backend.local_catalog import MODELS, RUNTIMES, get_model, list_models, resolve_hf_model
-from backend.local_runtime import Cancelled, ManagedRuntime, detect_hardware, preflight, prepare_install
+from backend.local_catalog import (
+    MODELS,
+    RUNTIMES,
+    get_model,
+    list_models,
+    model_artifact_state,
+    resolve_hf_model,
+)
+from backend.local_runtime import (
+    Cancelled,
+    ManagedRuntime,
+    auto_gpu_fit_target_mb,
+    detect_hardware,
+    preflight,
+    prepare_install,
+)
 from gui import config_manager
 from gui._local_model_form import build_form
 
@@ -26,6 +41,9 @@ def activate_config(config: dict, model_id: str, settings: dict, result: dict, t
     local.update(settings)
     local.update(enabled=False, model_id=model_id, target_language=target, installed_models=installed)
     translation = updated.setdefault('translation', {})
+    if local.get('pending_default_model_id') == model_id:
+        translation['default_selection'] = {'kind': 'local', 'id': model_id}
+        local.pop('pending_default_model_id', None)
     if translation.get('engine') == 'managed_llama':
         translation['engine'] = 'noop'
     translation.pop('managed_llama', None)  # Never persist temporary runtime tokens.
@@ -46,6 +64,7 @@ def deactivate_config(config: dict) -> dict:
 class InstallWorker(QtCore.QThread):
     progress = QtCore.Signal(str, object, object)
     hardware = QtCore.Signal(str)
+    hardware_warning = QtCore.Signal(str)
     outcome = QtCore.Signal(object, str)
 
     def __init__(self, root: Path, model_id: str, settings: dict, stt: dict,
@@ -66,6 +85,7 @@ class InstallWorker(QtCore.QThread):
                 self.hardware.emit(preflight(model, hw, self.settings, self.stt))
             except RuntimeError as exc:
                 self.hardware.emit(str(exc) + ' Download is allowed; capture checks memory again.')
+                self.hardware_warning.emit('GPU memory may be insufficient. Try a smaller model or CPU mode. Download can continue.')
             kind = 'windows-cpu' if self.settings['gpu_layers'] == 0 else 'windows-cuda'
             executable, model_path = prepare_install(self.root, model, kind, self.cancel_event,
                                                      self.progress.emit, allow_download=self.allow_download)
@@ -95,7 +115,7 @@ class LocalModelController(QtCore.QObject):
         self.controls = build_form(widget, [{'id': m.id, 'name': m.name} for m in list_models(self.get_config())])
         for name in ('context', 'gpu_layers', 'port'):
             self.controls[name] = self.controls['advanced'].findChild(QtWidgets.QSpinBox, name)
-        self.controls['gpu_layers'].setToolTip('Auto uses GPU offload after a shared-memory preflight. Set 0 for CPU translation.')
+        self.detected_hardware = detect_hardware()
         self.runtime = ManagedRuntime()
         self.worker: InstallWorker | None = None
         self.closing = False
@@ -156,28 +176,101 @@ class LocalModelController(QtCore.QObject):
         self.root = Path(root)
         return True
 
+    def refresh_state(self) -> None:
+        if not self.busy and not self.runtime.alive():
+            self._details()
+
     @property
     def busy(self) -> bool:
         return self.worker is not None
 
-    def _details(self, *_args) -> None:
+    def _selected_model_state(self):
         model = get_model(self.controls['model'].currentData(), self.get_config())
-        installed = self.get_config().get('local_llama', {}).get('installed_models', [])
-        self.controls['stop'].setEnabled(not self.busy and model.id in installed)
+        available, status, reason = model_artifact_state(self.root, model)
+        published = model.id in set(
+            self.get_config().get('local_llama', {}).get('installed_models', [])
+        )
+        return model, available, published, status, reason
+
+    def _details(self, *_args) -> None:
+        model, available, published, _status, reason = self._selected_model_state()
+        self.controls['stop'].setEnabled(not self.busy and available and published)
         kind = 'windows-cpu' if self.controls['gpu_layers'].value() == 0 else 'windows-cuda'
         runtime_size = sum(a.size for a in RUNTIMES[kind])
         self.controls['details'].setText(
-            'ON-DEVICE · MANAGED RUNTIME\n'
-            f'Model: {model.size / 1024**3:.2f} GiB · execution components: {runtime_size / 1024**2:.0f} MiB on first use. '
-            f'{model.license}. Runs locally; model files come from {model.repo}. '
-            'Quality depends on language and content. Download includes all required GGUF parts. ' + model.notes
+            f'<b>{html.escape(model.name)}</b> · {model.size / 1024**3:.2f} GiB download'
         )
+        self.controls['technical_details'].setText(
+            f'{runtime_size / 1024**2:.0f} MiB runtime download on first use. '
+            f'{html.escape(model.license)} · Runs locally from {html.escape(model.repo)}. '
+            'Quality varies by language and content. The download includes every required GGUF part. '
+            f'{html.escape(model.notes)}'
+        )
+        gpu_layers = self.controls['gpu_layers'].value()
+        stt = self.get_config().get('stt', {})
+        if gpu_layers == -1:
+            fit_target = auto_gpu_fit_target_mb(stt)
+            offload_summary = (
+                'Auto · llama.cpp chooses the highest fitting GPU layer count at each model load. '
+                f'It keeps about {fit_target / 1024:.1f} GiB free for Whisper '
+                f'{stt.get("model", "medium")} and shared peaks.'
+            )
+        elif gpu_layers == 0:
+            offload_summary = 'CPU · Translation does not offload model layers to the GPU.'
+        else:
+            offload_summary = (
+                f'Manual · llama.cpp will offload at most {gpu_layers} layer(s). '
+                'If that does not fit, capture reports the load error instead of silently changing the value.'
+            )
+        self.controls['gpu_layers_summary'].setText(offload_summary)
+        if not self.busy:
+            self.controls['hardware_warning'].hide()
+            try:
+                self.controls['hardware'].setText(
+                    preflight(
+                        model,
+                        self.detected_hardware,
+                        {'gpu_layers': gpu_layers},
+                        stt,
+                    )
+                )
+            except (RuntimeError, ValueError) as exc:
+                self.controls['hardware'].setText(str(exc))
+            progress = self.controls['progress']
+            if available:
+                progress.setRange(0, 100)
+                progress.setValue(100)
+                progress.show()
+                if published:
+                    self.controls['install'].setText('Verify installation')
+                    self.controls['status'].setText(
+                        'Ready. Select this model in the extension to translate.'
+                    )
+                else:
+                    self.controls['install'].setText('Add to extension choices')
+                    self.controls['status'].setText(
+                        'Model files are installed but hidden from new extension choices.'
+                    )
+            else:
+                progress.setRange(0, 100)
+                progress.setValue(0)
+                progress.hide()
+                self.controls['install'].setText('Download model')
+                if published:
+                    self.controls['status'].setText(
+                        'Model files are missing or incomplete. Download again to use this model.'
+                    )
+                else:
+                    self.controls['status'].setText(
+                        (reason or 'Model files are not installed.') + ' Download to add it to extension choices.'
+                    )
 
     def _set_busy(self, busy: bool) -> None:
         for key in ('model', 'target', 'advanced', 'install', 'add_model'):
             self.controls[key].setEnabled(not busy and not self.runtime.alive())
         self.controls['cancel'].setEnabled(busy)
-        self.controls['stop'].setEnabled(not busy and self.controls['model'].currentData() in self.get_config().get('local_llama', {}).get('installed_models', []))
+        _model, available, published, _status, _reason = self._selected_model_state()
+        self.controls['stop'].setEnabled(not busy and available and published)
 
     def install(self, _checked=False, *, allow_download=True) -> None:
         if self.busy or self.runtime.alive() or self.closing:
@@ -191,6 +284,7 @@ class LocalModelController(QtCore.QObject):
         self.worker = worker
         worker.progress.connect(self._progress)
         worker.hardware.connect(self.controls['hardware'].setText)
+        worker.hardware_warning.connect(self._hardware_warning)
         worker.outcome.connect(self._outcome)
         worker.finished.connect(self._finished)
         self._set_busy(True)
@@ -199,10 +293,15 @@ class LocalModelController(QtCore.QObject):
 
     def _progress(self, message: str, done: int, total: int) -> None:
         bar = self.controls['progress']
+        bar.show()
         bar.setRange(0, 100 if total else 0)
         if total:
             bar.setValue(min(100, int(done * 100 / total)))
         self.controls['status'].setText(message)
+
+    def _hardware_warning(self, message: str) -> None:
+        self.controls['hardware_warning'].setText(message)
+        self.controls['hardware_warning'].setVisible(bool(message))
 
     def _outcome(self, result, error: str) -> None:
         self._pending_result, self._pending_error = result, error
@@ -235,12 +334,15 @@ class LocalModelController(QtCore.QObject):
                 self.failed.emit(message)
         except Exception as exc:
             self.runtime.stop()
+            self._pending_error = str(exc)
             self.controls['status'].setText(f'Could not enable local translation: {exc}')
             self.failed.emit(str(exc))
         finally:
             self.controls['progress'].setRange(0, 100)
             self.controls['progress'].setValue(100 if result is not None and not self._pending_error and not worker.cancel_event.is_set() else 0)
             self._set_busy(False)
+            if result is not None and not self._pending_error and not worker.cancel_event.is_set():
+                self._details()
 
     def cancel(self) -> None:
         if self.worker:
@@ -259,6 +361,7 @@ class LocalModelController(QtCore.QObject):
             return
         self.runtime.stop()
         self._set_busy(False)
+        self._details()
         self.controls['status'].setText('Removed from new capture choices. Files were kept; stop existing captures to unload the model.')
         self.deactivated.emit(cfg)
 

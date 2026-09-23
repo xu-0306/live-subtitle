@@ -21,6 +21,25 @@ stt:
   vad: true
   vac: true
   vac_chunk_size: 0.04
+  max_context_tokens: 96 # SimulStreaming prompt cap; smaller values reduce error feedback loops
+  repetition_guard:
+    enabled: true
+    min_repeats: 6
+    short_unit_min_repeats: 16
+    min_span_chars: 16
+    max_unit_chars: 24
+    min_coverage: 0.45
+    reset_cooldown_sec: 5
+  evidence_gate:
+    enabled: true
+    nonspeech_prob: 0.5 # native SimulStreaming no-speech cutoff
+    no_speech_threshold: 0.6 # reject only when paired with weak decoding
+    avg_logprob_threshold: -1.0
+    confirm_below_probability: 0.35 # low-confidence partials need agreement
+    min_stable_updates: 2
+    min_agreement: 0.8
+    reset_after_rejections: 3 # reset ASR context after repeated rejections
+    reset_cooldown_sec: 5
   stall_timeout_sec: 15
   stall_check_interval_sec: 5
   engine_recycle_sec: 0 # rebuild STT engine periodically to release memory (0 disables)
@@ -51,26 +70,6 @@ translation:
     base_url: "https://api.openai.com/v1" # provider base URL or complete API endpoint
     api_type: "chat_completions" # chat_completions, responses, messages
     auto_complete_endpoint: true # false uses the entered URL without appending an endpoint
-  vllm:
-    active_profile: "local-default"
-    profiles:
-      - id: "local-default"
-        name: "Local vLLM"
-        mode: "local" # local runtime launch is managed by the desktop GUI, not this adapter
-        base_url: "http://127.0.0.1:8000"
-        api_key: ""
-        model: ""
-        served_model: ""
-        api_type: "chat_completions"
-        auto_complete_endpoint: true
-        max_concurrency: 4
-        runtime: # saved for a local launcher; the HTTP translation adapter does not apply it
-          max_model_len: 4096
-          max_num_seqs: 16
-          tensor_parallel_size: 1
-          gpu_memory_utilization: 0.9
-          dtype: "auto"
-          quantization: "auto"
 
 subtitle:
   max_chars: 260

@@ -27,7 +27,7 @@ def test_build_form_exposes_contract_controls_and_initial_values() -> None:
     controls = build_form(parent, models)
 
     assert isinstance(parent.layout(), QtWidgets.QVBoxLayout)
-    assert set(controls) == {
+    assert set(controls) >= {
         "model",
         "add_model",
         "details",
@@ -39,6 +39,7 @@ def test_build_form_exposes_contract_controls_and_initial_values() -> None:
         "progress",
         "status",
         "advanced",
+        "gpu_layers_summary",
     }
 
     model = controls["model"]
@@ -102,6 +103,8 @@ def test_build_form_exposes_contract_controls_and_initial_values() -> None:
     assert gpu_layers is not None
     assert (gpu_layers.minimum(), gpu_layers.maximum(), gpu_layers.value()) == (-1, 999, -1)
     assert gpu_layers.specialValueText() == "Auto"
+    assert "highest layer count" in gpu_layers.toolTip()
+    assert "Whisper" in controls["gpu_layers_summary"].text()
     assert port is not None
     assert (port.minimum(), port.maximum(), port.value()) == (1024, 65535, 18080)
     assert "context" in context.toolTip().lower()

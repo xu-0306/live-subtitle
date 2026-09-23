@@ -30,7 +30,7 @@ models: [{id, name, engine: "desktop", selection: {kind: "local" | "profile", id
 stt_models: [{id, name, available, status, selection: {model, backend?}}]
 defaults: {stt: {model, backend?}, translation: {selection?, target_language, partial}}
 active: {name, selection?, captures: number}
-capabilities: ["profile_import"]
+capabilities: ["profile_import", "management_v1"]
 ```
 
 模型名稱與 ID 不是擴充功能的白名單；名稱、語言與模型來源均可擴充。狀態與 selection.kind 則屬有限協定。缺少必要版本／能力時顯示升級或不可用提示，不靜默降級至另一模型。
@@ -40,11 +40,13 @@ capabilities: ["profile_import"]
 - 共用儲存層為 `backend.config_store`。
 - `load_snapshot(path)` 回傳 `(config, revision)`。
 - `save_config(path, config, expected_revision=...)` 回傳新 revision；過期快照以 `RevisionConflictError` 拒絕，GUI 保留使用者尚未保存的輸入並提示重新載入。
-- 新服務清單為 `translation.service_profiles`；既有 `translation.vllm.profiles` 保留 adapter，避免直接刪除舊設定。
+- 新服務清單為 `translation.service_profiles`；既有 `translation.vllm.profiles` 讀取為一般 OpenAI-compatible API，保留連線資料與 ID，移除啟動參數。GUI 儲存後清除舊重複區段並保留預設選擇。vLLM launch helper 已封存，不參與執行或打包。
 - 明確的 `service_profiles: []` 是有效的空清單；不能再由 legacy adapter 補回已刪除的服務。`translation.default_selection` 保存 local／profile 選擇或明確的 None，舊 `default_profile_id` 僅作相容。
 - 原子替換的設定文件內嵌 `_stt_tts_store` revision／digest；缺少舊 `.revision` sidecar 不會失去衝突保護。既有無版本文件或外部編輯以 52-bit digest 產生版本 token，保存時限制在 JavaScript safe integer 範圍。revision 用於相等性比較，不能假設外部編輯後仍單調遞增。
 - profile 的 engine、model、API 類型、URL 補全與引擎專有 options 必須保存原意；Ollama、NLLB 與相容 API 不因搬移儲存位置而換成不同引擎。
 - GUI 保存與瀏覽器遷移採同一個原子保存及衝突處理機制。
+- Options 的 `desktop_management` v1 透過同一個本機 `/asr` WebSocket 讀取無密鑰快照，或帶 `expected_revision` 執行單項變更。後端回覆 `desktop_management_result`，長時間下載期間回覆 `desktop_management_progress`。可管理共用預設、Whisper 下載、受管理 GGUF 目錄／發布狀態及翻譯服務；新增 GGUF 先解析公開 Hugging Face 權重的固定 revision 與 SHA256。一般網頁來源被拒絕。API key 僅可寫入，不出現在讀取結果。
+- Options 新增翻譯服務時由後端產生穩定 ID；編輯時沿用原 ID。OpenAI／相容 API 的 `save_profile` 在提交設定前，以實際翻譯請求依序測試 Chat completions、Responses、Messages，儲存第一個可用格式；三種皆失敗時不增加 revision，也不改寫原服務。GUI 與 Options 從同一設定快照讀取偵測結果。
 
 ## 舊資料遷移
 

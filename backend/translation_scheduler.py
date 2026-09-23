@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -88,6 +89,7 @@ class TranslationScheduler:
         text: str,
         source_lang: Optional[str],
         target_lang: Optional[str] = None,
+        context: str = "",
     ) -> str:
         profile_id = str(getattr(provider, "profile_id", "default") or "default")
         profile_limit = getattr(provider, "max_concurrency", None)
@@ -106,8 +108,20 @@ class TranslationScheduler:
                     self.metrics.started += 1
                     self.metrics.total_queue_ms += (started_at - queued_at) * 1000.0
                     try:
-                        result = await provider.atranslate(
-                            text, source_lang, target_lang
+                        translate = provider.atranslate
+                        kwargs = {}
+                        if context:
+                            try:
+                                parameters = inspect.signature(translate).parameters
+                            except (TypeError, ValueError):
+                                parameters = {}
+                            if "context" in parameters or any(
+                                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                                for parameter in parameters.values()
+                            ):
+                                kwargs["context"] = context
+                        result = await translate(
+                            text, source_lang, target_lang, **kwargs
                         )
                     except asyncio.CancelledError:
                         self.metrics.cancelled += 1

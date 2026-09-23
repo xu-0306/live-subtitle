@@ -13,6 +13,7 @@ from backend.translator import (
     OpenAITranslator,
     resolve_models_url,
     resolve_provider_config,
+    _build_translation_prompt,
 )
 
 
@@ -77,6 +78,20 @@ class ApiUrlPolicyTests(unittest.TestCase):
 
 
 class AsyncOpenAITranslatorTests(unittest.IsolatedAsyncioTestCase):
+    def test_prompt_is_domain_neutral_and_context_is_disambiguation_only(self) -> None:
+        prompt = _build_translation_prompt(
+            "The bank is closed.",
+            "en",
+            "粵語（香港）",
+            context="We arrived late and checked the opening hours.",
+        )
+        self.assertIn("粵語（香港）", prompt)
+        self.assertIn("Preceding context for disambiguation only", prompt)
+        self.assertIn("Current transcript to translate", prompt)
+        self.assertNotIn("game", prompt.lower())
+        self.assertNotIn("travel", prompt.lower())
+        self.assertNotIn("classify", prompt.lower())
+
     async def test_uses_shared_async_client_for_translation_and_models(self) -> None:
         requests: list[httpx.Request] = []
 
@@ -110,6 +125,40 @@ class AsyncOpenAITranslatorTests(unittest.IsolatedAsyncioTestCase):
             "/v1/models",
         ])
         self.assertEqual(requests[0].headers["authorization"], "Bearer secret")
+
+    async def test_context_snapshot_reaches_provider_payload_without_domain_routing(self) -> None:
+        requests: list[httpx.Request] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "翻譯"}}]},
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            translator = OpenAITranslator(
+                api_key="",
+                model="arbitrary-model",
+                target_language="isiZulu",
+                base_url="https://provider.example/v1",
+                http_client=client,
+            )
+            self.assertEqual(
+                await translator.atranslate(
+                    "The bank is closed.",
+                    "en",
+                    context="We arrived late and checked the opening hours.",
+                ),
+                "翻譯",
+            )
+        body = json.loads(requests[0].content)
+        user_prompt = body["messages"][1]["content"]
+        self.assertIn("isiZulu", user_prompt)
+        self.assertIn("We arrived late", user_prompt)
+        self.assertIn("Current transcript to translate", user_prompt)
+        self.assertNotIn("game", user_prompt.lower())
+        self.assertNotIn("travel", user_prompt.lower())
 
     async def test_http_translation_is_cancelled_without_thread_wrapper(self) -> None:
         entered = asyncio.Event()

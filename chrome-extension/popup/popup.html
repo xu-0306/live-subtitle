@@ -47,18 +47,10 @@
           <p id="translationSelectionHint" class="field-hint">Use the desktop default or choose a managed service.</p>
         </div>
 
-        <div class="two-column">
-          <div class="field">
-            <label class="field-label" for="sttModelSizeSelect">Speech model</label>
-            <select id="sttModelSizeSelect" class="native-control"></select>
-          </div>
-          <div class="field">
-            <label class="field-label" for="sttModelModeSelect">Speech setting</label>
-            <select id="sttModelModeSelect" class="native-control">
-              <option value="inherit">Desktop default</option>
-              <option value="override">This tab</option>
-            </select>
-          </div>
+        <div class="field">
+          <label class="field-label" for="sttModelSizeSelect">STT model</label>
+          <select id="sttModelSizeSelect" class="native-control"></select>
+          <p id="sttSelectionHint" class="field-hint">Use the desktop default or choose an installed model for the next capture.</p>
         </div>
 
         <div class="field language-field">

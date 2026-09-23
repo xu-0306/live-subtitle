@@ -116,6 +116,62 @@ def test_config_activation_does_not_mutate_prior_or_override_new_external_choice
     assert lc.deactivate_config(updated)['translation'] == {'engine': 'vllm'}
 
 
+def test_recommended_model_becomes_default_only_after_verified_install():
+    model_id = lc.MODELS[0].id
+    config = {
+        'translation': {'default_selection': {'kind': 'none', 'id': 'none'}},
+        'local_llama': {'pending_default_model_id': model_id},
+    }
+    updated = lc.activate_config(
+        config,
+        model_id,
+        {'gpu_layers': -1},
+        {'installed': True},
+        'zh-TW',
+    )
+    assert updated['translation']['default_selection'] == {
+        'kind': 'local',
+        'id': model_id,
+    }
+    assert 'pending_default_model_id' not in updated['local_llama']
+
+
+def test_stale_installed_flag_is_not_shown_as_a_completed_download(app, tmp_path):
+    model_id = lc.MODELS[0].id
+    config = {
+        'translation': {'engine': 'noop'},
+        'local_llama': {'model_id': model_id, 'installed_models': [model_id]},
+    }
+    widget = QtWidgets.QWidget()
+    controller = lc.LocalModelController(widget, tmp_path, lambda: config, lambda cfg: None)
+    controller.load_config(config)
+    try:
+        assert 'missing' in controller.controls['status'].text().lower()
+        assert controller.controls['stop'].isEnabled() is False
+        assert controller.controls['progress'].isHidden()
+        assert controller.controls['install'].text() == 'Download model'
+    finally:
+        controller.shutdown()
+
+
+def test_download_progress_reappears_after_selecting_missing_model(app, tmp_path):
+    widget = QtWidgets.QWidget()
+    controller = lc.LocalModelController(widget, tmp_path, lambda: {}, lambda cfg: None)
+    try:
+        assert controller.controls['progress'].isHidden()
+        controller._progress('Checking runtime', 0, 0)
+        assert not controller.controls['progress'].isHidden()
+        assert controller.controls['progress'].maximum() == 0
+        controller._progress('Downloading model', 30, 100)
+        assert not controller.controls['progress'].isHidden()
+        assert controller.controls['progress'].value() == 30
+        assert controller.controls['technical'].isHidden()
+        controller.controls['info_toggle'].click()
+        assert not controller.controls['technical'].isHidden()
+    finally:
+        controller.shutdown()
+
+
 def test_real_mainwindow_exposes_local_tab_and_shutdown(app, tmp_path, monkeypatch):
     from gui.app import MainWindow
     file = tmp_path/'config.yaml'
@@ -142,7 +198,7 @@ def test_real_mainwindow_exposes_local_tab_and_shutdown(app, tmp_path, monkeypat
 
 
 def test_custom_language_roundtrip_and_gui_profile_save_do_not_activate(app, tmp_path):
-    from gui.vllm_settings import VllmSettingsWidget
+    from gui.service_catalog_widget import ServiceCatalogWidget
     config = {'translation': {'engine': 'noop'}, 'local_llama': {'target_language': 'Wolof'}}
     parent = QtWidgets.QWidget()
     controller = lc.LocalModelController(parent, tmp_path, lambda: config, lambda cfg: None)
@@ -154,11 +210,37 @@ def test_custom_language_roundtrip_and_gui_profile_save_do_not_activate(app, tmp
     saved = controller.collect_into_config(config)
     assert saved['local_llama']['target_language'] == '粵語（香港）'
     assert saved['translation']['target_language'] == '粵語（香港）'
-    services = VllmSettingsWidget()
+    services = ServiceCatalogWidget()
     services.load_from_config(saved)
     services.name_input.setText('A new cloud vendor')
-    services.served_model_input.setText('future/model')
+    services.model_input.setText('future/model')
     updated = services.collect_into_config(saved)
     assert updated['translation']['engine'] == 'noop'
-    assert not services.use_vllm_check.isVisible()
+    assert updated['translation']['service_profiles'][0]['model'] == 'future/model'
     controller.shutdown()
+
+
+def test_gpu_offload_control_roundtrips_auto_cpu_and_manual_modes(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(lc, 'detect_hardware', lambda: Hardware('test gpu', 12288, 10000))
+    config = {
+        'stt': {'model': 'small'},
+        'translation': {'engine': 'noop'},
+        'local_llama': {'gpu_layers': -1},
+    }
+    parent = QtWidgets.QWidget()
+    controller = lc.LocalModelController(parent, tmp_path, lambda: config, lambda cfg: None)
+    controller.load_config(config)
+    try:
+        assert controller.controls['gpu_layers'].value() == -1
+        assert 'highest fitting GPU layer count' in controller.controls['gpu_layers_summary'].text()
+        assert controller.collect_into_config(config)['local_llama']['gpu_layers'] == -1
+
+        controller.controls['gpu_layers'].setValue(0)
+        assert 'CPU' in controller.controls['gpu_layers_summary'].text()
+        assert controller.collect_into_config(config)['local_llama']['gpu_layers'] == 0
+
+        controller.controls['gpu_layers'].setValue(23)
+        assert '23 layer(s)' in controller.controls['gpu_layers_summary'].text()
+        assert controller.collect_into_config(config)['local_llama']['gpu_layers'] == 23
+    finally:
+        controller.shutdown()

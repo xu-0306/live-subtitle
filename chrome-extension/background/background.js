@@ -4,6 +4,7 @@ const OFFSCREEN_URL = chrome.runtime.getURL("offscreen/offscreen.html");
 const tabStatus = new Map();
 const captureSettings = new Map();
 const restartState = new Map();
+const startingTabs = new Set();
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 30000;
 
@@ -141,6 +142,15 @@ function isTerminalCapturePhase(phase) {
   );
 }
 
+function isCaptureTransitioning(tabId) {
+  return startingTabs.has(tabId) || Boolean(restartState.get(tabId)?.inFlight);
+}
+
+function reconcileIdleOverlay(tabId) {
+  if (!Number.isInteger(tabId) || isCaptureTransitioning(tabId)) return;
+  sendSubtitleToTab(tabId, { type: "subtitle-remove" });
+}
+
 async function ensureOffscreenDocument() {
   const hasDocument = await chrome.offscreen.hasDocument();
   if (hasDocument) return;
@@ -199,6 +209,10 @@ async function startCapture(tabId, wsUrl, settings) {
         throw err;
       }
     }
+    // Open a new content-script capture epoch only after any previous stream
+    // has fully stopped. This prevents late messages from the old session from
+    // reviving an overlay that is fading out.
+    await sendSubtitleToTab(targetTabId, { type: "subtitle-start" });
     const response = await sendOffscreenMessage({
       type: "offscreen-start",
       tabId: targetTabId,
@@ -298,9 +312,11 @@ function buildFallbackStatus(requestedTabId) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "popup-start") {
     rememberCaptureSettings(message.tabId, message.wsUrl, message.settings);
+    startingTabs.add(message.tabId);
     startCapture(message.tabId, message.wsUrl, message.settings)
       .then(() => sendResponse({ ok: true }))
-      .catch((err) => sendResponse({ ok: false, error: err.message }));
+      .catch((err) => sendResponse({ ok: false, error: err.message }))
+      .finally(() => startingTabs.delete(message.tabId));
     return true;
   }
 
@@ -316,6 +332,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const requestedTabId = Number.isInteger(message.tabId) ? message.tabId : null;
     chrome.offscreen.hasDocument().then((hasDocument) => {
       if (!hasDocument) {
+        reconcileIdleOverlay(requestedTabId);
         sendResponse({
           ok: true,
           capturing: false,
@@ -327,6 +344,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendOffscreenMessage({ type: "offscreen-status", tabId: requestedTabId })
         .then((response) => {
           if (response && response.ok) {
+            if (!response.running) {
+              reconcileIdleOverlay(requestedTabId);
+            }
             sendResponse({
               ok: true,
               capturing: Boolean(response.running),
@@ -338,10 +358,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             });
             return;
           }
-          sendResponse(buildFallbackStatus(requestedTabId));
+          const fallback = buildFallbackStatus(requestedTabId);
+          if (!fallback.capturing) {
+            reconcileIdleOverlay(requestedTabId);
+          }
+          sendResponse(fallback);
         })
         .catch(() => {
-          sendResponse(buildFallbackStatus(requestedTabId));
+          const fallback = buildFallbackStatus(requestedTabId);
+          if (!fallback.capturing) {
+            reconcileIdleOverlay(requestedTabId);
+          }
+          sendResponse(fallback);
         });
     });
     return true;

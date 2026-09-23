@@ -264,7 +264,7 @@
     const legacyOnly = state.catalogResult?.upgradeNeeded || state.catalogResult?.legacy?.kind === "legacy";
     if (!options.length && legacyOnly) options.push(...FALLBACK_STT_MODELS);
     if (state.selectedStt && !options.some((entry) => entry.id === state.selectedStt)) {
-      options.push({ id: state.selectedStt, name: `Selected speech model · ${state.selectedStt}`, available: false, stale: true, status: "removed", selection: { model: state.selectedStt } });
+      options.push({ id: state.selectedStt, name: `Selected STT model · ${state.selectedStt}`, available: false, stale: true, status: "removed", selection: { model: state.selectedStt } });
     }
     return options;
   }
@@ -289,16 +289,19 @@
   function renderChoices() {
     renderSelect("translationModelSelect", modelOptions(), state.selectedTranslation);
     const backendStt = state.catalog?.defaults?.stt?.model || state.catalog?.defaults?.stt?.selection?.model;
-    const sttSelection = state.sttMode === "inherit" && backendStt
-      ? backendStt
-      : state.selectedStt;
-    const sttItems = state.sttMode === "inherit" && !backendStt
-      ? [{ id: "__desktop-default__", name: "Desktop default", available: true, status: "default" }, ...sttOptions()]
-      : sttOptions();
-    if (backendStt && !sttItems.some((item) => item.id === backendStt)) {
-      sttItems.unshift({ id: backendStt, name: `Desktop default · ${backendStt}`, available: true, status: "default" });
-    }
-    renderSelect("sttModelSizeSelect", sttItems, sttSelection || "__desktop-default__");
+    const speechModels = sttOptions();
+    const backendSttItem = speechModels.find((item) => (item.selection?.model || item.id) === backendStt);
+    const desktopSpeechLabel = backendStt
+      ? `Desktop default · ${backendSttItem?.name || backendStt}`
+      : "Desktop default";
+    const sttItems = [
+      { id: "__desktop-default__", name: desktopSpeechLabel, available: true, status: "default" },
+      ...speechModels,
+    ];
+    const sttSelection = state.sttMode === "override" && state.selectedStt
+      ? state.selectedStt
+      : "__desktop-default__";
+    renderSelect("sttModelSizeSelect", sttItems, sttSelection);
     const language = $("translationLanguageSelect"); if (language) language.value = state.targetLanguage;
     const languageMode = $("translationLanguageModeSelect"); if (languageMode) languageMode.value = state.targetLanguageMode;
     const sttMode = $("sttModelModeSelect"); if (sttMode) sttMode.value = state.sttMode;
@@ -310,7 +313,16 @@
       const hint = language.parentElement?.querySelector?.(".field-hint");
       if (hint) hint.style.display = inherited && !isOptionsPage ? "none" : "";
     }
-    const stt = $("sttModelSizeSelect"); if (stt) stt.disabled = state.sttMode !== "override";
+    const selectedSpeech = sttItems.find((item) => item.id === sttSelection);
+    const sttHint = $("sttSelectionHint");
+    if (sttHint) {
+      sttHint.textContent = sttSelection === "__desktop-default__"
+        ? "Follows the saved desktop default. Changes apply to the next capture."
+        : selectedSpeech?.available === false
+          ? "This STT model is not installed. Download it in the desktop app."
+          : "Pinned for the next capture. The current capture is not changed.";
+      if (sttHint.dataset) sttHint.dataset.state = selectedSpeech?.available === false ? "error" : "ready";
+    }
     const behavior = $("translationBehaviorSelect");
     if (behavior) behavior.value = state.partialMode === "inherit" ? "inherit" : (state.partial ? "partial" : "final");
     const selected = modelOptions().find((item) => item.id === state.selectedTranslation);
@@ -479,9 +491,9 @@
     if (!model) { setStatus("Choose a translation service first", "error"); return; }
     if (model.available === false) { setStatus("Selected service is unavailable. Refresh the desktop app.", "error"); return; }
     if (state.sttMode === "override") {
-      if (!state.selectedStt) { setStatus("Choose a speech model or inherit the desktop default", "error"); return; }
+      if (!state.selectedStt) { setStatus("Choose an STT model or inherit the desktop default", "error"); return; }
       const selectedSpeech = sttOptions().find((entry) => entry.id === state.selectedStt);
-      if (selectedSpeech?.available === false && (state.catalogResult?.catalog?.kind === "v2" || global.STTDesktopCatalog)) { setStatus("Selected speech model is unavailable. Refresh the desktop app.", "error"); return; }
+      if (selectedSpeech?.available === false && (state.catalogResult?.catalog?.kind === "v2" || global.STTDesktopCatalog)) { setStatus("Selected STT model is unavailable. Refresh the desktop app.", "error"); return; }
     }
     let apiKey = "";
     if (model.legacy && model.engine === "openai" && global.STTConnectionSettings?.getApiKey) {
@@ -504,13 +516,33 @@
     if (!response?.ok) { setStatus(`Could not stop capture: ${response?.error || "extension unavailable"}`, "error"); return; }
     setStatus("Stopped", "idle"); setButtons(false); await refreshCaptureStatus();
   }
+  function persistTranslationSelection() {
+    const translation = $("translationModelSelect");
+    if (translation) {
+      state.selectedTranslation = translation.value;
+      storageSet({ [KEYS.selectedTranslation]: state.selectedTranslation });
+    }
+  }
+  function persistSttSelection() {
+    const stt = $("sttModelSizeSelect");
+    if (!stt) return;
+    if (stt.value === "__desktop-default__") {
+      state.sttMode = "inherit";
+      storageSet({ [KEYS.sttMode]: "inherit" });
+    } else {
+      state.sttMode = "override";
+      state.selectedStt = stt.value;
+      storageSet({ [KEYS.sttMode]: "override", [KEYS.selectedStt]: state.selectedStt });
+    }
+    renderChoices();
+  }
   function persistSelection() {
-    const translation = $("translationModelSelect"); if (translation) { state.selectedTranslation = translation.value; storageSet({ [KEYS.selectedTranslation]: state.selectedTranslation }); }
-    const stt = $("sttModelSizeSelect"); if (stt) { state.selectedStt = stt.value; storageSet({ [KEYS.selectedStt]: state.selectedStt }); }
+    persistTranslationSelection();
+    persistSttSelection();
   }
   function wireEvents() {
-    $("translationModelSelect")?.addEventListener("change", persistSelection);
-    $("sttModelSizeSelect")?.addEventListener("change", persistSelection);
+    $("translationModelSelect")?.addEventListener("change", persistTranslationSelection);
+    $("sttModelSizeSelect")?.addEventListener("change", persistSttSelection);
     $("sttModelModeSelect")?.addEventListener("change", (event) => { state.sttMode = event.target.value === "override" ? "override" : "inherit"; storageSet({ [KEYS.sttMode]: state.sttMode }); renderChoices(); });
     $("translationLanguageModeSelect")?.addEventListener("change", (event) => { state.targetLanguageMode = event.target.value === "override" ? "override" : "inherit"; storageSet({ [KEYS.languageMode]: state.targetLanguageMode }); renderChoices(); });
     const updateLanguage = (event) => { const input = event?.target || $("translationLanguageSelect"); state.targetLanguage = normalizeLanguage(input?.value); storageSet({ [KEYS.language]: state.targetLanguage }); };

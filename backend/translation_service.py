@@ -14,8 +14,14 @@ import threading
 from pathlib import Path
 
 from .config_store import public_profile, server_id_for_config, service_profile_issues, service_profiles
-from .local_catalog import get_model, list_models
-from .local_runtime import ManagedRuntime, detect_hardware, preflight, prepare_install
+from .local_catalog import get_model, list_models, model_artifact_state
+from .local_runtime import (
+    ManagedRuntime,
+    auto_gpu_fit_target_mb,
+    detect_hardware,
+    preflight,
+    prepare_install,
+)
 from .model_manager import (
     WHISPER_MODEL_URLS,
     resolve_stt_model_target,
@@ -274,18 +280,12 @@ class TranslationService:
         local = config.get('local_llama') if isinstance(config.get('local_llama'), dict) else {}
         configured_root = str(local.get('root') or '').strip()
         model_root = Path(configured_root).expanduser() if configured_root else self.root
-        root = model_root / 'models' / model.id
-        try:
-            paths = [root / artifact.filename for artifact in model.files]
-            if all(path.is_file() and path.stat().st_size == artifact.size for path, artifact in zip(paths, model.files)):
-                return True, 'installed', None
-            if any(path.exists() for path in paths):
-                return False, 'invalid', 'One or more model artifacts are missing or incomplete.'
-        except OSError:
-            return False, 'invalid', 'Model files could not be inspected.'
+        available, status, reason = model_artifact_state(model_root, model)
+        if available or status == 'invalid':
+            return available, status, reason
         if model.id in set(local.get('installed_models') or []):
             return False, 'missing', 'Model is selected but its files are not installed.'
-        return False, 'missing', 'Model is not installed.'
+        return False, status, reason or 'Model is not installed.'
 
     def _stt_catalog(self, config: dict) -> list[dict]:
         stt = config.get('stt') if isinstance(config.get('stt'), dict) else {}
@@ -475,7 +475,7 @@ class TranslationService:
             'stt_models': self._stt_catalog(config),
             'defaults': {'stt': stt_default, 'translation': translation_default},
             'active': active,
-            'capabilities': ['profile_import'],
+            'capabilities': ['profile_import', 'management_v1'],
         }
         return result
 
@@ -503,7 +503,10 @@ class TranslationService:
                     settings['target_language'] = cfg['target_language']
                     cancel = threading.Event()
                     def start():
-                        preflight(model, detect_hardware(), settings, stt)
+                        hardware = detect_hardware()
+                        preflight(model, hardware, settings, stt)
+                        if int(settings.get('gpu_layers', -1)) == -1:
+                            settings['gpu_fit_target_mb'] = auto_gpu_fit_target_mb(stt)
                         kind = 'windows-cpu' if settings.get('gpu_layers') == 0 else 'windows-cuda'
                         exe, weights = prepare_install(self.root, model, kind, cancel, lambda *a: None,
                                                        allow_download=False)

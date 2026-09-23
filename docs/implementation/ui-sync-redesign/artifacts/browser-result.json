@@ -1,0 +1,28 @@
+{
+  "browser": "138.0.7204.23",
+  "checks": [
+    "light: real extension renders at 380x560 with visible Stop and no horizontal overflow",
+    "dark: real extension renders at 380x560 with visible Stop and no horizontal overflow",
+    "System theme responds to browser color-scheme changes",
+    "backend catalog consumed; independent profile editor removed",
+    "desktop rename automatically syncs, preserving selection (2589 ms including config write)",
+    "real browser migrates saved profile and credential; endpoint semantics retained and secret absent from cache",
+    "backend disconnect keeps last known choice and shows offline status"
+  ],
+  "errors": [],
+  "translationLabels": [
+    "Desktop default",
+    "None · subtitles only",
+    "Research translation"
+  ],
+  "sttLabels": [
+    "Whisper tiny · unavailable",
+    "Whisper base · unavailable",
+    "Whisper small",
+    "Whisper medium",
+    "Whisper large-v3",
+    "Qwen3-ASR 0.6B · unavailable",
+    "Qwen3-ASR 1.7B · unavailable"
+  ],
+  "inference": false
+}

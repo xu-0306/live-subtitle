@@ -40,7 +40,7 @@ WhisperLiveKit STT
 網頁字幕疊加層
 ```
 
-擴充功能負責下一次擷取所使用的選項；桌面程式則負責持久設定、模型檔案、翻譯服務 profiles 及後端生命週期。
+擴充功能的 Popup 負責下一次擷取所使用的選項；Options 設定頁與桌面 GUI 均可管理模型、翻譯服務及桌面預設，透過本機後端共用同一份版本化設定檔。桌面 GUI 另外負責後端生命週期與進階調校。
 
 ## 翻譯選項
 
@@ -81,9 +81,15 @@ Manifest V3 擴充功能負責：
 
 預設 endpoint 是 `ws://127.0.0.1:8765/asr`，後端預設只接受本機連線。
 
+直接啟動後端而不開啟桌面 GUI 時，可在擴充功能的 **Options** 完成常用設定：下載／移除 Whisper 模型、下載或發布本機 GGUF、加入及編輯公開 Hugging Face GGUF 目錄項目、管理翻譯服務 profiles，並保存共用的 STT／翻譯預設與目標語言。Options 的服務管理連線限定本機後端；密鑰可提交給後端保存，但後端不會再傳回密鑰。GUI 在沒有未儲存表單變更時會同步載入外部更新。
+
 ## 模型與應用程式資料
 
-Release packages 不包含模型。STT 模型會在第一次需要時下載；受管理的 GGUF 翻譯模型則從 **Local translation** 頁面下載。
+Release packages 不包含模型。STT 模型可從 GUI 或 Options 主動下載；受管理的 GGUF 翻譯模型可從 GUI 的 **Local translation** 或擴充功能 Options 下載。
+
+全新安裝首次開啟時會執行模型設定助手。助手透過 `nvidia-smi` 偵測 NVIDIA GPU 的總顯存與目前可用顯存，將 Whisper 與本機翻譯模型視為同一份顯存預算，推薦低延遲、日常或高品質組合。8GB 以下或未偵測到支援的 NVIDIA GPU 時，預設建議改用較小的 Whisper 與 CPU 翻譯，亦可選擇稍後設定外部翻譯服務。可隨時從 **Settings → Recommend model setup** 重新偵測。
+
+套用建議只會保存選擇，不會自行下載大型檔案。使用者仍需在 **STT models** 與 **Local translation** 檢查大小並主動下載；推薦的本機翻譯模型通過下載與雜湊驗證後，才會成為桌面預設。
 
 Windows 預設資料結構：
 

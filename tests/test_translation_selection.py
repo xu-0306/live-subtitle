@@ -35,7 +35,7 @@ def test_languages_are_open_and_profiles_are_opaque():
         resolved, _ = ts.resolve_selection(cfg, external(language))
         assert resolved['target_language'] == language
         assert language in _build_translation_prompt('hello', 'en', language) or language == 'zh-CN'
-        assert resolved['vllm']['active_profile'] == 'remote-future'
+        assert resolved['openai']['profile_id'] == 'remote-future'
     assert cfg == before
     for value in ['', 'x\nnew prompt', 'x' * 129]:
         with pytest.raises(ValueError, match='target language'):
@@ -59,6 +59,7 @@ class FakeRuntime:
     def __init__(self):
         self.running = False
         self.events = []
+        self.settings = []
 
     def alive(self):
         return self.running
@@ -66,6 +67,7 @@ class FakeRuntime:
     def start(self, *args, **kwargs):
         assert not self.running
         self.events.append('start')
+        self.settings.append(copy.deepcopy(args[3]))
         self.running = True
         return {'base_url': 'http://127.0.0.1:18080', 'api_key': 'ephemeral', 'model': MODELS[0].id}
 
@@ -95,13 +97,36 @@ def test_local_and_cloud_are_exclusive_and_runtime_unloads(tmp_path, monkeypatch
         await service.release('b')
         assert runtime.events == ['start', 'stop']
         cloud = await service.acquire('c', external(), {})
-        assert cloud['engine'] == 'vllm' and not runtime.alive()
+        assert cloud['engine'] == 'openai_compatible' and not runtime.alive()
         with pytest.raises(ValueError):
             await service.acquire('a', local(), {})
         await service.release('c')
         await service.acquire('d', local(), {})
         assert runtime.events == ['start', 'stop', 'start']
         await service.close()
+    asyncio.run(scenario())
+
+
+def test_auto_gpu_mode_passes_stt_aware_fit_target_to_runtime(tmp_path, monkeypatch):
+    cfg = config()
+    cfg['local_llama']['gpu_layers'] = -1
+    cfg['stt'] = {'model': 'base'}
+    runtime = FakeRuntime()
+    monkeypatch.setattr(ts, 'preflight', lambda *a: None)
+    monkeypatch.setattr(ts, 'detect_hardware', lambda: object())
+    monkeypatch.setattr(
+        ts,
+        'prepare_install',
+        lambda *a, **k: (tmp_path / 'server', tmp_path / 'weights'),
+    )
+
+    async def scenario():
+        service = ts.TranslationService(lambda: cfg, tmp_path, runtime)
+        await service.acquire('auto', local(), cfg['stt'])
+        assert runtime.settings[-1]['gpu_layers'] == -1
+        assert runtime.settings[-1]['gpu_fit_target_mb'] == 2048
+        await service.close()
+
     asyncio.run(scenario())
 
 
@@ -206,7 +231,7 @@ def test_websocket_rejects_second_provider_before_stt_and_releases_lease(tmp_pat
                 second.receive_json()
                 error = second.receive_json()
                 assert error['type'] == 'error' and 'Stop existing captures' in error['message']
-            assert entered == ['vllm']
+            assert entered == ['openai_compatible']
         # A catalog request completes on the same event loop after disconnect.
         with client.websocket_connect('/asr') as check:
             check.send_json({'type': 'translation_catalog'})

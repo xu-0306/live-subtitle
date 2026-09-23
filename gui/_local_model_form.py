@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
+    QToolButton,
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
@@ -24,20 +27,51 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     """
 
     layout = QVBoxLayout(parent)
+    layout.setContentsMargins(8, 4, 14, 20)
+    layout.setSpacing(14)
+
+    overview = QFrame()
+    overview.setObjectName("localOverviewCard")
+    overview_layout = QVBoxLayout(overview)
+    overview_layout.setContentsMargins(18, 16, 18, 16)
+    overview_layout.setSpacing(10)
 
     details = QLabel(
-        "ON-DEVICE · MANAGED RUNTIME\n"
-        "Download local GGUF models and the built-in llama.cpp runtime here, then select a model in the browser extension. "
-        "No provider account or API endpoint is required."
+        '<p style="margin:0 0 7px 0;"><b>ON-DEVICE · MANAGED RUNTIME</b></p>'
+        '<p style="margin:0;">Download local GGUF models and the built-in llama.cpp runtime here, '
+        'then select a model in the browser extension. No provider account or API endpoint is required.</p>'
     )
     details.setObjectName("details")
+    details.setTextFormat(Qt.TextFormat.RichText)
     details.setWordWrap(True)
     details.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
     hardware = QLabel("Checking hardware...")
-    hardware.setObjectName("hardware")
+    hardware.setObjectName("runtimeNotice")
     hardware.setWordWrap(True)
     hardware.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+    info_toggle = QToolButton()
+    info_toggle.setText("Model details")
+    info_toggle.setCheckable(True)
+    info_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    info_toggle.setArrowType(Qt.ArrowType.RightArrow)
+    technical = QWidget()
+    technical_layout = QVBoxLayout(technical)
+    technical_layout.setContentsMargins(0, 0, 0, 0)
+    technical_details = QLabel()
+    technical_details.setWordWrap(True)
+    technical_layout.addWidget(technical_details)
+    technical_layout.addWidget(hardware)
+    technical.hide()
+    def toggle_details(expanded):
+        technical.setVisible(expanded)
+        info_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+    info_toggle.toggled.connect(toggle_details)
+    hardware_warning = QLabel()
+    hardware_warning.setWordWrap(True)
+    hardware_warning.setObjectName("runtimeNotice")
+    hardware_warning.hide()
 
     model = QComboBox()
     model.setObjectName("model")
@@ -63,12 +97,17 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
         target.addItem(label, language)
 
     model_group = QGroupBox("Local model")
+    model_group.setObjectName("card")
     model_form = QFormLayout(model_group)
+    model_form.setContentsMargins(18, 20, 18, 16)
+    model_form.setHorizontalSpacing(14)
+    model_form.setVerticalSpacing(10)
     model_form.addRow("Model", model)
     model_form.addRow("Default target language", target)
 
     add_model = QPushButton("Add Hugging Face GGUF…")
     add_model.setObjectName("add_model")
+    add_model.setProperty("kind", "secondary")
     model_form.addRow("", add_model)
 
     install = QPushButton("Download model")
@@ -77,10 +116,12 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
 
     cancel = QPushButton("Cancel")
     cancel.setObjectName("cancel")
+    cancel.setProperty("kind", "secondary")
     cancel.setEnabled(False)
 
     stop = QPushButton("Remove from extension choices")
     stop.setObjectName("stop")
+    stop.setProperty("kind", "danger")
     stop.setEnabled(False)
 
     actions = QHBoxLayout()
@@ -95,13 +136,16 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     progress.setValue(0)
 
     status = QLabel("Select a model to download. Captures start and stop it automatically.")
-    status.setObjectName("status")
+    status.setObjectName("localModelStatus")
     status.setWordWrap(True)
     status.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
     advanced = QGroupBox("Advanced")
-    advanced.setObjectName("advanced")
+    advanced.setObjectName("card")
     advanced_form = QFormLayout(advanced)
+    advanced_form.setContentsMargins(18, 20, 18, 16)
+    advanced_form.setHorizontalSpacing(14)
+    advanced_form.setVerticalSpacing(10)
 
     context = QSpinBox()
     context.setObjectName("context")
@@ -115,9 +159,16 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     gpu_layers.setValue(-1)
     gpu_layers.setSpecialValueText("Auto")
     gpu_layers.setToolTip(
-        "GPU layers to offload; 0 GPU layers keeps inference on the CPU, "
-        "while Auto lets the runtime choose."
+        "Auto chooses the highest layer count that fits while reserving VRAM for Whisper. "
+        "Set 0 for CPU translation, or enter a positive number for an exact manual limit."
     )
+
+    gpu_layers_summary = QLabel(
+        "Auto dynamically sizes GPU offload for the selected Whisper model."
+    )
+    gpu_layers_summary.setObjectName("gpu_layers_summary")
+    gpu_layers_summary.setWordWrap(True)
+    gpu_layers_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
     port = QSpinBox()
     port.setObjectName("port")
@@ -126,11 +177,15 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     port.setToolTip("Loopback service port used by local translation.")
 
     advanced_form.addRow("Context memory", context)
-    advanced_form.addRow("GPU layers", gpu_layers)
+    advanced_form.addRow("GPU offload", gpu_layers)
+    advanced_form.addRow("", gpu_layers_summary)
     advanced_form.addRow("Loopback port", port)
 
-    layout.addWidget(details)
-    layout.addWidget(hardware)
+    overview_layout.addWidget(details)
+    overview_layout.addWidget(hardware_warning)
+    overview_layout.addWidget(info_toggle)
+    overview_layout.addWidget(technical)
+    layout.addWidget(overview)
     layout.addWidget(model_group)
     layout.addLayout(actions)
     layout.addWidget(progress)
@@ -143,6 +198,10 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
         "model": model,
         "details": details,
         "hardware": hardware,
+        "hardware_warning": hardware_warning,
+        "technical_details": technical_details,
+        "info_toggle": info_toggle,
+        "technical": technical,
         "target": target,
         "install": install,
         "cancel": cancel,
@@ -150,4 +209,8 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
         "progress": progress,
         "status": status,
         "advanced": advanced,
+        "context": context,
+        "gpu_layers": gpu_layers,
+        "gpu_layers_summary": gpu_layers_summary,
+        "port": port,
     }

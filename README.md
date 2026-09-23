@@ -85,6 +85,10 @@ The default endpoint is `ws://127.0.0.1:8765/asr`. The backend accepts local con
 
 Models are not bundled with the Release packages. STT models are downloaded when first needed, while managed GGUF translation models are downloaded from the **Local translation** page.
 
+On a fresh install, a model setup assistant detects NVIDIA total and currently free VRAM through `nvidia-smi`. It budgets Whisper and local translation together, then recommends a low-latency, everyday, or quality pair. Below 8 GiB, or when no supported NVIDIA GPU is detected, it recommends a smaller Whisper model with CPU translation and explains the external-service fallback. Run detection again at any time under **Settings → Recommend model setup**.
+
+Applying a recommendation saves choices but does not download large files automatically. Review and start downloads from **STT models** and **Local translation**. A recommended local translation model becomes the desktop default only after its download and hash verification finish.
+
 The default Windows data layout is:
 
 ```text

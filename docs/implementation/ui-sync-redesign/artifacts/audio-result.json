@@ -1,0 +1,208 @@
+{
+  "checks": [
+    "catalog starts without capture leases",
+    "backend resolves inherited STT model",
+    "backend resolves inherited target language",
+    "backend resolves inherited translation model",
+    "same managed model accepts another language",
+    "different service is rejected while capture holds model",
+    "no-translation session coexists",
+    "public speech recognized from real WebM/Opus",
+    "managed model returns translated subtitles",
+    "last capture releases translation occupancy",
+    "owned llama runtime has exited before backend shutdown"
+  ],
+  "events": [
+    {
+      "type": "status",
+      "phase": "loading",
+      "message": "Preparing selected translation service",
+      "snapshot": {
+        "stt": {
+          "model": "small",
+          "backend": "whisper"
+        },
+        "translation": {
+          "target_language": "zh-TW",
+          "partial": false
+        }
+      }
+    },
+    {
+      "type": "status",
+      "phase": "loading",
+      "message": "Preparing selected translation service",
+      "snapshot": {
+        "stt": {
+          "model": "small",
+          "backend": "whisper"
+        },
+        "translation": {
+          "target_language": "zh-TW",
+          "partial": false,
+          "selection": {
+            "kind": "local",
+            "id": "qwen35-2b-q4"
+          }
+        }
+      }
+    },
+    {
+      "type": "status",
+      "phase": "capturing",
+      "message": "Capture ready",
+      "snapshot": {
+        "stt": {
+          "model": "small",
+          "backend": "whisper"
+        },
+        "translation": {
+          "target_language": "zh-TW",
+          "partial": false,
+          "selection": {
+            "kind": "local",
+            "id": "qwen35-2b-q4"
+          }
+        }
+      }
+    },
+    {
+      "type": "subtitle",
+      "original": "Hey",
+      "translated": "",
+      "language": "en",
+      "timestamp": 1789303561331,
+      "final": false,
+      "seq": 1
+    },
+    {
+      "type": "subtitle",
+      "original": "and",
+      "translated": "",
+      "language": "en",
+      "timestamp": 1789303562706,
+      "final": false,
+      "seq": 1
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans!",
+      "translated": "",
+      "language": "en",
+      "timestamp": 1789303563105,
+      "final": false,
+      "seq": 1
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow",
+      "translated": "",
+      "language": "en",
+      "timestamp": 1789303563505,
+      "final": true,
+      "seq": 1
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow",
+      "translated": "因此，我的同胞们",
+      "language": "en",
+      "timestamp": 1789303563922,
+      "final": true,
+      "seq": 1
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans,",
+      "translated": "",
+      "language": "en",
+      "timestamp": 1789303563942,
+      "final": true,
+      "seq": 2
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans,",
+      "translated": "因此，我的美國同胞們，",
+      "language": "en",
+      "timestamp": 1789303564346,
+      "final": true,
+      "seq": 2
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans, ask",
+      "translated": "",
+      "language": "en",
+      "timestamp": 1789303564397,
+      "final": true,
+      "seq": 3
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans, ask",
+      "translated": "因此，我的同胞们，請",
+      "language": "en",
+      "timestamp": 1789303564790,
+      "final": true,
+      "seq": 3
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans, ask not",
+      "translated": "",
+      "language": "en",
+      "timestamp": 1789303565334,
+      "final": true,
+      "seq": 4
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans, ask not",
+      "translated": "因此，我的同胞们，不要问",
+      "language": "en",
+      "timestamp": 1789303565740,
+      "final": true,
+      "seq": 4
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans, ask not what your",
+      "translated": "",
+      "language": "en",
+      "timestamp": 1789303565899,
+      "final": true,
+      "seq": 5
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans, ask not what your",
+      "translated": "因此，我的美國朋友們，不要問你們要什麼。",
+      "language": "en",
+      "timestamp": 1789303566302,
+      "final": true,
+      "seq": 5
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans, ask not what your country can",
+      "translated": "",
+      "language": "en",
+      "timestamp": 1789303566516,
+      "final": true,
+      "seq": 6
+    },
+    {
+      "type": "subtitle",
+      "original": "And so, my fellow Americans, ask not what your country can",
+      "translated": "因此，我的美國朋友們，不要問你的國家能為你提供什麼。",
+      "language": "en",
+      "timestamp": 1789303566954,
+      "final": true,
+      "seq": 6
+    }
+  ],
+  "real_inference": true,
+  "real_browser_tab_capture": false,
+  "audio_source": "https://raw.githubusercontent.com/openai/whisper/main/tests/jfk.flac"
+}

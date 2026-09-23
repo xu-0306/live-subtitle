@@ -1,0 +1,21 @@
+{
+  "checks": [
+    "opening and collecting GUI preserves no-translation default",
+    "GUI save commits shared config",
+    "live backend sees GUI profile rename",
+    "GUI default checkbox reaches live catalog",
+    "inherited provider resolves GUI model",
+    "test endpoint is saved through GUI",
+    "actual GUI runner reaches verified Ready",
+    "Test button sends real backend/provider request and displays result",
+    "test keeps saved model semantics",
+    "unchecking default saves",
+    "unchecking selected default restores explicit no translation",
+    "last service can be removed",
+    "empty catalog saves",
+    "removed service does not resurrect from legacy adapters"
+  ],
+  "real_qt": true,
+  "real_backend": true,
+  "inference": false
+}

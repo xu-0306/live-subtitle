@@ -233,27 +233,125 @@ class Hardware:
     free_mb: int
 
 
+STT_VRAM_RESERVE_MB = {
+    'tiny': 768,
+    'base': 1024,
+    'small': 2048,
+    'medium': 3500,
+    'large-v3': 5500,
+}
+SHARED_VRAM_HEADROOM_MB = 1024
+
+
+def stt_vram_reserve_mb(stt: dict) -> int:
+    """Return the shared-GPU allowance for an STT configuration."""
+
+    return STT_VRAM_RESERVE_MB.get(
+        str(stt.get('model', 'medium')),
+        STT_VRAM_RESERVE_MB['large-v3'],
+    )
+
+
+def auto_gpu_fit_target_mb(stt: dict) -> int:
+    """VRAM llama.cpp must leave available for Whisper and shared peaks."""
+
+    return stt_vram_reserve_mb(stt) + SHARED_VRAM_HEADROOM_MB
+
+
+def gpu_offload_args(settings: dict) -> list[str]:
+    """Translate the persisted GPU-layer contract into llama.cpp arguments.
+
+    ``-1`` is the product's Auto mode.  The bundled llama.cpp runtime can read
+    arbitrary GGUF architecture metadata and choose the largest fitting layer
+    count itself, which is more general than maintaining per-model layer maps.
+    """
+
+    layers = int(settings.get('gpu_layers', -1))
+    if not -1 <= layers <= 999:
+        raise ValueError('Invalid GPU layer setting.')
+    if layers == -1:
+        fit_target = int(
+            settings.get(
+                'gpu_fit_target_mb',
+                STT_VRAM_RESERVE_MB['medium'] + SHARED_VRAM_HEADROOM_MB,
+            )
+        )
+        if fit_target < SHARED_VRAM_HEADROOM_MB:
+            raise ValueError('Invalid automatic GPU memory reserve.')
+        return [
+            '--n-gpu-layers', 'auto',
+            '--fit', 'on',
+            '--fit-target', str(fit_target),
+        ]
+    return ['--n-gpu-layers', str(layers), '--fit', 'off']
+
+
 def detect_hardware() -> Hardware:
     try:
         result = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total,memory.free',
                                  '--format=csv,noheader,nounits'], capture_output=True, text=True,
                                 timeout=5, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        row = result.stdout.splitlines()[0].rsplit(',', 2)
-        return Hardware(row[0].strip(), int(row[1]), int(row[2]))
+        detected = []
+        for line in result.stdout.splitlines():
+            row = line.rsplit(',', 2)
+            if len(row) == 3:
+                detected.append(Hardware(row[0].strip(), int(row[1]), int(row[2])))
+        if detected:
+            # The managed CUDA runtime can use an NVIDIA GPU; recommend against
+            # the card with the largest capacity and prefer current free memory
+            # as the tie breaker on multi-GPU systems.
+            return max(detected, key=lambda item: (item.total_mb, item.free_mb))
     except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
-        return Hardware('No supported NVIDIA GPU detected', 0, 0)
+        pass
+    return Hardware('No supported NVIDIA GPU detected', 0, 0)
 
 
 def preflight(model: ModelSpec, hardware: Hardware, settings: dict, stt: dict) -> str:
-    if int(settings.get('gpu_layers', -1)) == 0:
+    gpu_layers = int(settings.get('gpu_layers', -1))
+    if gpu_layers == 0:
         return 'CPU translation selected. Real-time performance depends on your CPU.'
-    if hardware.total_mb < 8 * 1024:
-        raise RuntimeError('Local GPU mode targets at least 8 GB VRAM. Select CPU (GPU layers = 0), or use an external translation service.')
-    reserve = {'tiny': 768, 'base': 1024, 'small': 2048, 'medium': 3500, 'large-v3': 5500}.get(str(stt.get('model', 'medium')), 5500)
-    needed = model.estimated_vram_mb + reserve + 1024
-    if hardware.free_mb < needed:
-        raise RuntimeError(f'Estimated shared workload needs {needed / 1024:.1f} GiB free; {hardware.free_mb / 1024:.1f} GiB available. Choose Compact, a smaller Whisper model, CPU translation, or an external service. Estimates include Whisper headroom.')
-    return f'{hardware.name}: {hardware.free_mb / 1024:.1f} GiB free. Shared-workload estimate: {needed / 1024:.1f} GiB; not a benchmark.'
+    if hardware.total_mb <= 0:
+        raise RuntimeError(
+            'No supported NVIDIA GPU was detected. Select CPU (GPU layers = 0), '
+            'or use an external translation service.'
+        )
+    reserve = stt_vram_reserve_mb(stt)
+    shared_reserve = reserve + SHARED_VRAM_HEADROOM_MB
+
+    if gpu_layers == -1:
+        if hardware.free_mb < shared_reserve:
+            raise RuntimeError(
+                f'Automatic GPU offload needs to keep about {shared_reserve / 1024:.1f} GiB '
+                f'free for Whisper and shared buffers; {hardware.free_mb / 1024:.1f} GiB '
+                'is currently available. Close GPU-heavy applications, choose a smaller '
+                'Whisper model, or select CPU translation.'
+            )
+        return (
+            f'{hardware.name}: {hardware.free_mb / 1024:.1f} GiB free. '
+            'Auto lets llama.cpp select the highest fitting GPU layer count while '
+            f'keeping {shared_reserve / 1024:.1f} GiB available for Whisper and shared buffers.'
+        )
+    # The catalog estimate describes a full model offload. An explicit finite
+    # --n-gpu-layers value is a partial offload whose actual VRAM use depends on
+    # GGUF architecture metadata; charging it the full estimate rejects safe
+    # configurations such as two layers on a 10 GiB card. Reserve enough room
+    # for Whisper and shared buffers here and let llama.cpp validate the chosen
+    # partial layer count when it loads the model.
+    if gpu_layers > 0:
+        needed = shared_reserve
+        if hardware.free_mb < needed:
+            raise RuntimeError(
+                f'Whisper and shared buffers need about {needed / 1024:.1f} GiB free; '
+                f'{hardware.free_mb / 1024:.1f} GiB available. Reduce GPU layers, '
+                'choose a smaller Whisper model, or use CPU translation.'
+            )
+        return (
+            f'{hardware.name}: {hardware.free_mb / 1024:.1f} GiB free. '
+            f'Partial translation offload: {gpu_layers} layer(s); '
+            f'{needed / 1024:.1f} GiB reserved for Whisper and shared buffers.'
+        )
+
+    raise ValueError('GPU layers must be Auto (-1), CPU (0), or a positive layer count.')
 
 
 def prepare_install(root: Path, model: ModelSpec, kind: str, cancel: threading.Event,
@@ -323,7 +421,8 @@ class ManagedRuntime:
             self.token = 'stt_' + secrets.token_urlsafe(32)
             args = (command_prefix or [str(executable)]) + [
                 '--model', str(model_path), '--alias', model_id, '--host', '127.0.0.1', '--port', str(port),
-                '--ctx-size', str(context), '--parallel', '1', '--n-gpu-layers', '99' if layers == -1 else str(layers),
+                '--ctx-size', str(context), '--parallel', '1',
+            ] + gpu_offload_args(settings) + [
                 '--batch-size', '256', '--ubatch-size', '128', '--api-key', self.token,
             ]
             if settings.get('disable_thinking'):
@@ -375,8 +474,18 @@ class ManagedRuntime:
                 content = payload['choices'][0]['message']['content']
                 if not isinstance(content, str) or not content.strip() or not self.alive():
                     raise RuntimeError('Local translation warmup did not produce text.')
-                return {'base_url': self.base_url, 'api_key': self.token, 'model': model_id,
-                        'warmup_ms': round((time.monotonic() - started) * 1000)}
+                return {
+                    'base_url': self.base_url,
+                    'api_key': self.token,
+                    'model': model_id,
+                    'warmup_ms': round((time.monotonic() - started) * 1000),
+                    'gpu_layers': 'auto' if layers == -1 else layers,
+                    **(
+                        {'gpu_fit_target_mb': int(settings['gpu_fit_target_mb'])}
+                        if layers == -1 and settings.get('gpu_fit_target_mb') is not None
+                        else {}
+                    ),
+                }
         except Exception:
             self.stop()
             raise

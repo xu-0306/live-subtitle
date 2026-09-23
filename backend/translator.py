@@ -25,7 +25,10 @@ DEFAULT_OPENAI_TIMEOUT_SEC = 15
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_VLLM_ENDPOINT = "http://127.0.0.1:8000/v1/chat/completions"
 SYSTEM_TRANSLATION_PROMPT = (
-    "You are a translation engine. Follow the user's instructions exactly."
+    "You are a translation engine. Translate only the current transcript into "
+    "the requested target language. Preserve meaning, tone, numbers, and "
+    "proper nouns. Use context only to resolve meaning; never output context, "
+    "labels, explanations, or a content-domain classification."
 )
 
 LANGUAGE_LABELS = {
@@ -63,18 +66,33 @@ def _describe_language(lang: Optional[str], fallback: str) -> str:
 
 
 def _build_translation_prompt(
-    text: str, source_lang: Optional[str], target_lang: str
+    text: str,
+    source_lang: Optional[str],
+    target_lang: str,
+    context: Optional[str] = None,
 ) -> str:
     source_desc = _describe_language(source_lang, "source language")
     target_desc = _describe_language(target_lang, "target language")
+    context_text = str(context or "").strip()
+    context_block = ""
+    if context_text:
+        context_block = (
+            "\n\nPreceding context for disambiguation only:\n"
+            f"{context_text}\n"
+        )
     return (
-        f"Translate the following {source_desc} text into {target_desc}. "
-        f"Output only the translation in {target_desc}. "
-        "Do not include the source text, explanations, or extra commentary. "
-        "Do not mix other languages. "
-        "Preserve meaning, punctuation, numbers, and proper nouns. "
-        f"If the input is already in {target_desc}, return it unchanged.\n\n"
-        f"{text}"
+        f"Translate the following {source_desc} transcript into {target_desc}. "
+        f"Use standard writing conventions for {target_desc}. "
+        "Infer intended terminology from the current transcript and optional "
+        "preceding context without naming a content domain. "
+        "Preserve meaning, tone, punctuation, numbers, and proper nouns. "
+        "The transcript may be incomplete or contain recognition noise; do not "
+        "invent missing facts. When context is insufficient or ambiguous, use "
+        "a conservative translation. Translate only the current transcript. "
+        f"If it is already in {target_desc}, return it unchanged. "
+        "Return only the translation, without labels, explanations, source text, "
+        "or a translation of the preceding context."
+        f"{context_block}\n\nCurrent transcript to translate:\n{text}"
     )
 
 
@@ -282,29 +300,55 @@ class BaseTranslator:
 
     def __init__(self, target_language: str, cache_size: int = DEFAULT_CACHE_SIZE) -> None:
         self.target_language = target_language
-        self._cache: LRUCache[Tuple[Optional[str], str, str], str] = LRUCache(
+        self._cache: LRUCache[Tuple[Optional[str], str, str, str], str] = LRUCache(
             cache_size
         )
 
     def translate(
-        self, text: str, source_lang: Optional[str], target_lang: Optional[str] = None
+        self,
+        text: str,
+        source_lang: Optional[str],
+        target_lang: Optional[str] = None,
+        context: Optional[str] = None,
     ) -> str:
         if not text:
             return ""
         target = target_lang or self.target_language
-        key = (source_lang, target, text)
+        key = (source_lang, target, text, context or "")
         cached, hit = self._cache.get(key)
         if hit:
             return cached or ""
-        result = self._translate_impl(text, source_lang, target)
+        implementation = self._translate_impl
+        try:
+            parameters = inspect.signature(implementation).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_context = "context" in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        if accepts_context:
+            result = implementation(
+                text, source_lang, target, context=context
+            )
+        else:
+            # Preserve compatibility for third-party synchronous adapters
+            # that predate the optional stable-source context API.
+            result = implementation(text, source_lang, target)
         self._cache.set(key, result)
         return result
 
     async def atranslate(
-        self, text: str, source_lang: Optional[str], target_lang: Optional[str] = None
+        self,
+        text: str,
+        source_lang: Optional[str],
+        target_lang: Optional[str] = None,
+        context: Optional[str] = None,
     ) -> str:
         """Async provider port; local synchronous engines run off the event loop."""
-        return await asyncio.to_thread(self.translate, text, source_lang, target_lang)
+        return await asyncio.to_thread(
+            self.translate, text, source_lang, target_lang, context
+        )
 
     async def list_models(self) -> list[str]:
         return []
@@ -316,14 +360,22 @@ class BaseTranslator:
         return None
 
     def _translate_impl(
-        self, text: str, source_lang: Optional[str], target_lang: str
+        self,
+        text: str,
+        source_lang: Optional[str],
+        target_lang: str,
+        context: Optional[str] = None,
     ) -> str:
         raise NotImplementedError
 
 
 class NoopTranslator(BaseTranslator):
     def _translate_impl(
-        self, text: str, source_lang: Optional[str], target_lang: str
+        self,
+        text: str,
+        source_lang: Optional[str],
+        target_lang: str,
+        context: Optional[str] = None,
     ) -> str:
         return ""
 
@@ -348,7 +400,11 @@ class NLLBTranslator(BaseTranslator):
         self._lock = threading.Lock()
 
     def _translate_impl(
-        self, text: str, source_lang: Optional[str], target_lang: str
+        self,
+        text: str,
+        source_lang: Optional[str],
+        target_lang: str,
+        context: Optional[str] = None,
     ) -> str:
         import torch
 
@@ -387,9 +443,13 @@ class OllamaTranslator(BaseTranslator):
         self._supports_keep_alive = _has_param(self._client.chat, "keep_alive")
 
     def _translate_impl(
-        self, text: str, source_lang: Optional[str], target_lang: str
+        self,
+        text: str,
+        source_lang: Optional[str],
+        target_lang: str,
+        context: Optional[str] = None,
     ) -> str:
-        prompt = _build_translation_prompt(text, source_lang, target_lang)
+        prompt = _build_translation_prompt(text, source_lang, target_lang, context)
         kwargs = {
             "model": self._model,
             "messages": [
@@ -460,9 +520,15 @@ class OpenAITranslator(BaseTranslator):
         return headers
 
     def _request_payload(
-        self, text: str, source_lang: Optional[str], target_lang: str
+        self,
+        text: str,
+        source_lang: Optional[str],
+        target_lang: str,
+        context: Optional[str] = None,
     ) -> Dict[str, Any]:
-        prompt = _build_translation_prompt(text, source_lang, target_lang)
+        prompt = _build_translation_prompt(
+            text, source_lang, target_lang, context
+        )
         if self._api_mode == API_TYPE_RESPONSES:
             return {
                 "model": self._model,
@@ -511,9 +577,13 @@ class OpenAITranslator(BaseTranslator):
         return RuntimeError(f"{response.status_code} {response.reason_phrase}: {detail}")
 
     def _translate_impl(
-        self, text: str, source_lang: Optional[str], target_lang: str
+        self,
+        text: str,
+        source_lang: Optional[str],
+        target_lang: str,
+        context: Optional[str] = None,
     ) -> str:
-        payload = self._request_payload(text, source_lang, target_lang)
+        payload = self._request_payload(text, source_lang, target_lang, context)
         body = json.dumps(payload).encode("utf-8")
         request = urllib_request.Request(
             self._api_url,
@@ -552,12 +622,16 @@ class OpenAITranslator(BaseTranslator):
             return await client.request(method, url, timeout=timeout, **kwargs)
 
     async def atranslate(
-        self, text: str, source_lang: Optional[str], target_lang: Optional[str] = None
+        self,
+        text: str,
+        source_lang: Optional[str],
+        target_lang: Optional[str] = None,
+        context: Optional[str] = None,
     ) -> str:
         if not text:
             return ""
         target = target_lang or self.target_language
-        key = (source_lang, target, text)
+        key = (source_lang, target, text, context or "")
         cached, hit = self._cache.get(key)
         if hit:
             return cached or ""
@@ -565,7 +639,7 @@ class OpenAITranslator(BaseTranslator):
             "POST",
             self._api_url,
             headers=self._headers(),
-            json=self._request_payload(text, source_lang, target),
+            json=self._request_payload(text, source_lang, target, context),
         )
         if response.is_error:
             raise self._http_error(response)
@@ -688,8 +762,8 @@ def _select_vllm_profile(vllm_cfg: Dict[str, Any]) -> Dict[str, Any]:
 def resolve_provider_config(cfg: Dict[str, object]) -> Dict[str, Any]:
     """Return a common OpenAI-compatible connection mapping.
 
-    vLLM runtime values are deliberately ignored here: they configure a managed
-    server process and cannot be applied through the inference HTTP API.
+    Legacy launch parameters are ignored: this adapter only connects to an
+    already running HTTP service.
     """
     engine = str(cfg.get("engine", "openai")).strip().lower()
     if engine == "vllm":

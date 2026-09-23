@@ -106,6 +106,24 @@ def get_model(model_id: str, config: dict | None = None) -> ModelSpec:
     raise ValueError(f'Unknown local model: {model_id}')
 
 
+def model_artifact_state(root: Path, model: ModelSpec) -> tuple[bool, str, str | None]:
+    """Inspect published GGUF files without trusting a stale config flag."""
+
+    folder = Path(root) / 'models' / model.id
+    paths = [folder / artifact.filename for artifact in model.files]
+    try:
+        if all(
+            path.is_file() and path.stat().st_size == artifact.size
+            for path, artifact in zip(paths, model.files)
+        ):
+            return True, 'installed', None
+        if any(path.exists() for path in paths):
+            return False, 'invalid', 'One or more model artifacts are missing or incomplete.'
+    except OSError:
+        return False, 'invalid', 'Model files could not be inspected.'
+    return False, 'missing', 'Model files are not installed in the configured folder.'
+
+
 def resolve_hf_model(repo: str, filename: str, revision: str = 'main', *, fetch=None) -> ModelSpec:
     """Resolve a public HF GGUF to immutable, hash-verified files (including shards).
 

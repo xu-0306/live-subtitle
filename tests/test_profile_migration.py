@@ -206,5 +206,5 @@ def test_import_preserves_legacy_vllm_profiles_when_creating_catalog(tmp_path: P
     )
     assert result["mapping"]["new-ollama"] == "profile:" + imported["id"]
     legacy = next(profile for profile in profiles if profile["id"] == "legacy")
-    assert legacy["engine"] == "vllm"
+    assert legacy["engine"] == "openai_compatible"
     assert legacy["base_url"] == "http://127.0.0.1:8000/v1"

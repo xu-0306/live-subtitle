@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import copy
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -43,6 +44,27 @@ def _window(tmp_path: Path) -> MainWindow:
     path = tmp_path / "config.yaml"
     config_manager.write_config(path, config)
     return MainWindow(path, auto_start=False, setup_tray=False)
+
+
+def test_open_gui_tracks_saved_extension_edits_without_discarding_its_own_form(tmp_path: Path) -> None:
+    _app()
+    window = _window(tmp_path)
+    try:
+        updated = copy.deepcopy(window.config)
+        updated["stt"]["model"] = "base"
+        revision = config_store.save_config(window.config_path, updated, expected_revision=window.config_revision)
+        window._sync_shared_config()
+        assert window.config_revision == revision
+        assert window.model_select_combo.currentData() == "base"
+
+        window._mark_dirty()
+        updated["stt"]["model"] = "tiny"
+        config_store.save_config(window.config_path, updated, expected_revision=revision)
+        window._sync_shared_config()
+        assert window.model_select_combo.currentData() == "base"
+        assert window._dirty
+    finally:
+        window.close()
 
 
 def test_sidebar_stack_keeps_existing_page_contract_and_scrolls(tmp_path: Path) -> None:
@@ -111,6 +133,7 @@ def test_model_storage_is_shared_and_config_folder_button_is_accessible(
     assert "Local translation models:" in window.model_storage_paths.text()
     assert str(storage_root / "Local Translation Models") in window.model_storage_paths.text()
     assert window.open_settings_folder_btn.accessibleName() == "Open settings folder"
+    assert window.setup_assistant_btn.accessibleName() == "Recommend model setup"
 
     opened = []
     monkeypatch.setattr(
@@ -183,10 +206,40 @@ def test_fresh_backend_default_uses_live_subtitle_appdata(
 def test_translation_pages_explain_runtime_vs_service_profiles(tmp_path: Path) -> None:
     _app()
     window = _window(tmp_path)
-    assert "MANAGED RUNTIME" in window.local_models.controls["details"].text()
+    assert "download" in window.local_models.controls["details"].text()
+    assert window.local_models.controls["technical"].isHidden()
     subtitles = window.service_catalog.findChildren(QtWidgets.QLabel, "mutedText")
-    assert any("CONFIGURATION ONLY" in label.text() for label in subtitles)
-    assert window.service_catalog.catalog_status.text() == "Connections & adapters"
+    assert any("select it in the extension" in label.text() for label in subtitles)
+    assert window.service_catalog.catalog_status.text() == "Saved services"
+    window.close()
+
+
+def test_stt_selection_publishes_without_saving_other_form_edits(tmp_path: Path) -> None:
+    from backend.translation_service import TranslationService
+    _app()
+    window = _window(tmp_path)
+    before, _ = config_store.load_snapshot(window.config_path)
+    window.host_input.setText('127.0.0.2')
+    window.model_select_combo.setCurrentIndex(window.model_select_combo.findData('small'))
+    saved, _ = config_store.load_snapshot(window.config_path)
+    assert saved['stt']['model'] == 'small'
+    assert saved['server'] == before['server']
+    assert window._dirty
+    service = TranslationService(lambda: config_store.load_snapshot(window.config_path)[0], tmp_path)
+    assert service.desktop_catalog()['defaults']['stt']['model'] == 'small'
+    window.close()
+
+
+def test_stt_auto_save_preserves_external_revision_on_conflict(tmp_path: Path) -> None:
+    _app()
+    window = _window(tmp_path)
+    external, revision = config_store.load_snapshot(window.config_path)
+    external['stt']['model'] = 'base'
+    config_store.save_config(window.config_path, external, expected_revision=revision)
+    window.model_select_combo.setCurrentIndex(window.model_select_combo.findData('small'))
+    assert config_store.load_snapshot(window.config_path)[0]['stt']['model'] == 'base'
+    assert window._dirty
+    assert 'not saved' in window.status_bar.currentMessage()
     window.close()
 
 
@@ -275,7 +328,7 @@ def test_noop_default_does_not_infer_vllm_and_profile_selection_is_explicit(tmp_
     window.close()
 
 
-def test_api_profile_metadata_survives_edit_and_vllm_keeps_auth_key(tmp_path: Path) -> None:
+def test_api_profile_metadata_survives_edit(tmp_path: Path) -> None:
     _app()
     window = _window(tmp_path)
     catalog = window.service_catalog
@@ -292,8 +345,4 @@ def test_api_profile_metadata_survives_edit_and_vllm_keeps_auth_key(tmp_path: Pa
     assert api["auto_complete_endpoint"] is False
     assert api["api_key"] == "api-secret"
 
-    catalog.kind_combo.setCurrentIndex(catalog.kind_combo.findData("vllm"))
-    catalog.api_key_input.setText("vllm-secret")
-    vllm = window._collect_config_from_ui()["translation"]["profiles"][0]
-    assert vllm["api_key"] == "vllm-secret"
     window.close()

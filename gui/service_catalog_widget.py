@@ -20,12 +20,16 @@ PROFILE_KINDS = (
     ("api", "OpenAI-compatible API"),
     ("ollama", "Ollama"),
     ("nllb", "NLLB local model"),
-    ("vllm", "vLLM helper"),
 )
 
 
 def _as_profile(value: Mapping[str, Any], index: int, kind: str | None = None) -> dict[str, Any]:
     profile = copy.deepcopy(dict(value))
+    if any(str(value or "").lower() == "vllm" for value in (kind, profile.get("kind"), profile.get("engine"))):
+        from backend.config_store import normalize_service_profile
+
+        profile = normalize_service_profile({**profile, "engine": "vllm"}, index)
+        kind = "api"
     profile["id"] = str(profile.get("id") or f"service-{index + 1}")
     profile["name"] = str(profile.get("name") or f"Translation service {index + 1}")
     engine = str(profile.get("engine") or "").strip().lower()
@@ -42,7 +46,7 @@ def _as_profile(value: Mapping[str, Any], index: int, kind: str | None = None) -
     profile["api_key"] = str(profile.get("api_key") or "")
     profile["api_type"] = str(profile.get("api_type") or "chat_completions")
     profile["auto_complete_endpoint"] = bool(profile.get("auto_complete_endpoint", True))
-    # Availability is not inferred from the profile type. A saved NLLB/vLLM
+    # Availability is not inferred from the profile type. A saved NLLB
     # row can still be missing its model, and an Ollama/API row can be merely
     # configured until a read-only test succeeds.
     profile["installed"] = bool(profile.get("installed", False))
@@ -152,7 +156,7 @@ def profiles_from_config(config: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 class ServiceCatalogWidget(QtWidgets.QWidget):
-    """Editable list of API, Ollama, NLLB and vLLM profiles."""
+    """Editable list of API, Ollama and NLLB connections."""
 
     changed = QtCore.Signal()
     notice = QtCore.Signal(str)
@@ -180,9 +184,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         title = QtWidgets.QLabel("Service connections")
         title.setObjectName("cardTitle")
         subtitle = QtWidgets.QLabel(
-            "PROFILES · CONFIGURATION ONLY\n"
-            "Configure cloud or self-hosted connections such as APIs, Ollama and vLLM, plus legacy NLLB adapters. "
-            "Managed llama.cpp downloads and on-device model files stay under Local translation."
+            "Add an API or Ollama connection, then select it in the extension."
         )
         subtitle.setObjectName("mutedText")
         subtitle.setWordWrap(True)
@@ -191,7 +193,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         root.addWidget(header)
 
         toolbar = QtWidgets.QHBoxLayout()
-        self.catalog_status = QtWidgets.QLabel("Connections & adapters")
+        self.catalog_status = QtWidgets.QLabel("Saved services")
         self.catalog_status.setObjectName("statusBadge")
         toolbar.addWidget(self.catalog_status)
         toolbar.addStretch(1)
@@ -353,6 +355,18 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
             legacy_vllm = translation_map.get("vllm")
             if isinstance(legacy_vllm, Mapping):
                 legacy_id = str(legacy_vllm.get("active_profile") or "").strip()
+                available_ids = {profile["id"] for profile in self._profiles}
+                if legacy_id not in available_ids:
+                    legacy_profiles = legacy_vllm.get("profiles")
+                    if isinstance(legacy_profiles, list):
+                        legacy_ids = [
+                            str(item.get("id") or f"profile-{index + 1}")
+                            for index, item in enumerate(legacy_profiles)
+                            if isinstance(item, Mapping)
+                        ]
+                    else:
+                        legacy_ids = [str(legacy_vllm.get("id") or legacy_vllm.get("active_profile") or "legacy-api")]
+                    legacy_id = next((identity for identity in legacy_ids if identity in available_ids), "")
                 if legacy_id:
                     self._selection_state = {"kind": "profile", "id": legacy_id}
         self._selection_touched = False
@@ -379,7 +393,6 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
                 "api": "openai_compatible",
                 "ollama": "ollama",
                 "nllb": "nllb",
-                "vllm": "vllm",
             }.get(kind, kind)
             clean["engine"] = engine
             clean["endpoint"] = clean.get("base_url", "")
@@ -388,7 +401,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         translation_map["profiles"] = clean_profiles
         default = next((p["id"] for p in self._profiles if p.get("_default")), "")
         if default:
-            if self._selection_touched:
+            if self._selection_touched or str(translation_map.get("engine") or "").lower() == "vllm":
                 translation_map["default_selection"] = {"kind": "profile", "id": default}
                 translation_map.pop("selection", None)
             # Remove the GUI-only legacy key after the first canonical save.
@@ -403,6 +416,11 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
             # A legacy key cannot select a service in the current backend
             # contract and should not survive a normal noop/default save.
             translation_map.pop("default_profile_id", None)
+        # Connections now live in the shared catalogue. Do not keep a second
+        # profile store containing the removed helper's launch parameters.
+        if str(translation_map.get("engine") or "").lower() == "vllm":
+            translation_map["engine"] = "noop"
+        translation_map.pop("vllm", None)
         # Keep legacy adapters in sync for old extension/backend versions while
         # the canonical profile list is being adopted.
         for kind, section_name in (("ollama", "ollama"), ("nllb", "nllb"), ("api", "openai")):
@@ -630,22 +648,20 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
             "api": "https://provider.example/v1",
             "ollama": "http://127.0.0.1:11434",
             "nllb": "Local model path or managed endpoint",
-            "vllm": "http://127.0.0.1:8000",
         }
         model_placeholders = {
             "api": "Model ID, for example gpt-4o-mini",
             "ollama": "Ollama model, for example llama3.1",
             "nllb": "NLLB model ID or local model name",
-            "vllm": "Served model name",
         }
         self.endpoint_input.setPlaceholderText(endpoint_placeholders.get(kind, endpoint_placeholders["api"]))
         self.model_input.setPlaceholderText(model_placeholders.get(kind, model_placeholders["api"]))
-        provider_fields = kind in {"api", "vllm"}
+        provider_fields = kind == "api"
         self.api_type_label.setVisible(provider_fields)
         self.api_type_combo.setVisible(provider_fields)
         self.auto_complete_check.setVisible(provider_fields)
-        self.api_key_input.setEnabled(kind in {"api", "ollama", "vllm"})
-        self.show_key_btn.setEnabled(kind in {"api", "ollama", "vllm"})
+        self.api_key_input.setEnabled(kind in {"api", "ollama"})
+        self.show_key_btn.setEnabled(kind in {"api", "ollama"})
 
     @staticmethod
     def _profile_state(profile: Mapping[str, Any]) -> str:
@@ -656,8 +672,6 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         model = str(profile.get("model") or "").strip()
         if kind == "nllb":
             return "Installed" if profile.get("installed") and model else "Needs setup"
-        if kind == "vllm":
-            return "Configured" if endpoint and model else "Needs setup"
         if kind in {"api", "ollama"}:
             return "Configured" if endpoint and model else "Needs setup"
         return "Configured" if endpoint or model else "Needs setup"

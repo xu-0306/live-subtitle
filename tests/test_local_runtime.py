@@ -201,9 +201,58 @@ def test_port_collision_does_not_adopt_or_stop_foreign_listener(tmp_path):
 
 
 def test_hardware_preflight_and_catalog():
-    with pytest.raises(RuntimeError, match='8 GB'):
-        lr.preflight(MODELS[0], lr.Hardware('small', 6144, 6144), {}, {'model': 'medium'})
+    with pytest.raises(RuntimeError, match='No supported NVIDIA GPU'):
+        lr.preflight(MODELS[0], lr.Hardware('none', 0, 0), {}, {'model': 'medium'})
     assert 'CPU' in lr.preflight(MODELS[0], lr.Hardware('none', 0, 0), {'gpu_layers': 0}, {})
-    assert 'not a benchmark' in lr.preflight(MODELS[0], lr.Hardware('3090', 24576, 20000), {}, {'model': 'medium'})
+    automatic = lr.preflight(
+        MODELS[0], lr.Hardware('small', 6144, 6144), {}, {'model': 'base'}
+    )
+    assert 'Auto lets llama.cpp select' in automatic
+    assert '2.0 GiB' in automatic
+    partial_model = next(model for model in MODELS if model.id == 'qwen35-4b-q4')
+    partial = lr.preflight(
+        partial_model,
+        lr.Hardware('3080', 10240, 6500),
+        {'gpu_layers': 2},
+        {'model': 'small'},
+    )
+    assert 'Partial translation offload: 2 layer(s)' in partial
+    with pytest.raises(RuntimeError, match='keep about'):
+        lr.preflight(
+            partial_model,
+            lr.Hardware('3080', 10240, 2500),
+            {'gpu_layers': -1},
+            {'model': 'small'},
+        )
     assert len(MODELS[1].files) == 2
     assert all(len(a.sha256) == 64 for m in MODELS for a in m.files)
+
+
+def test_gpu_offload_args_delegate_auto_sizing_to_llama_and_honor_manual_values():
+    assert lr.auto_gpu_fit_target_mb({'model': 'base'}) == 2048
+    assert lr.auto_gpu_fit_target_mb({'model': 'large-v3'}) == 6524
+    assert lr.gpu_offload_args({
+        'gpu_layers': -1,
+        'gpu_fit_target_mb': 3072,
+    }) == [
+        '--n-gpu-layers', 'auto',
+        '--fit', 'on',
+        '--fit-target', '3072',
+    ]
+    assert lr.gpu_offload_args({'gpu_layers': 17}) == [
+        '--n-gpu-layers', '17', '--fit', 'off'
+    ]
+    assert lr.gpu_offload_args({'gpu_layers': 0}) == [
+        '--n-gpu-layers', '0', '--fit', 'off'
+    ]
+
+
+def test_hardware_detection_chooses_largest_nvidia_gpu(monkeypatch):
+    result = subprocess.CompletedProcess(
+        args=['nvidia-smi'],
+        returncode=0,
+        stdout='Display GPU, 8192, 7000\nCompute GPU, 24576, 18000\n',
+        stderr='',
+    )
+    monkeypatch.setattr(lr.subprocess, 'run', lambda *args, **kwargs: result)
+    assert lr.detect_hardware() == lr.Hardware('Compute GPU', 24576, 18000)

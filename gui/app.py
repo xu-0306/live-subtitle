@@ -15,9 +15,16 @@ if __package__ in (None, ""):
 from gui import config_manager
 from gui.backend_runner import BackendRunner
 from gui.download_worker import ModelDownloadWorker
-from gui.vllm_settings import VllmSettingsWidget
 from gui.local_model_controller import LocalModelController
 from gui.service_catalog_widget import ServiceCatalogWidget
+from gui.setup_assistant import (
+    SETUP_ASSISTANT_VERSION,
+    SetupAssistantDialog,
+    apply_recommendation,
+    mark_setup_assistant_seen,
+    recommendations_for_hardware,
+)
+from backend.local_runtime import detect_hardware
 from backend.model_manager import WHISPER_MODEL_URLS, model_filename
 
 MODEL_OPTIONS = [
@@ -130,7 +137,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("Live Subtitle")
         self.setMinimumSize(900, 640)
 
-        self.config_path = Path(config_path) if config_path else config_manager.ensure_user_config()
+        explicit_config = config_path is not None
+        if explicit_config:
+            self.config_path = Path(config_path)
+            config_existed = self.config_path.exists()
+        else:
+            user_config_path = config_manager.get_user_config_path()
+            config_existed = user_config_path.exists()
+            self.config_path = config_manager.ensure_user_config()
         if self.config_path.exists():
             self.config: Dict[str, Any] = self._load_config_snapshot()
         else:
@@ -151,6 +165,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._service_test_result_received = False
         self._loading_ui = False
         self._dirty = False
+        gui_config = self.config.get("gui") if isinstance(self.config.get("gui"), dict) else {}
+        try:
+            setup_version = int(gui_config.get("setup_assistant_version", 0))
+        except (TypeError, ValueError):
+            setup_version = 0
+        self._show_setup_assistant_on_start = (
+            not explicit_config
+            and not config_existed
+            and setup_version < SETUP_ASSISTANT_VERSION
+        )
         self._auto_start_enabled = (
             bool(auto_start)
             if auto_start is not None
@@ -172,8 +196,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self._setup_tray()
         self._update_ws_url()
         self._update_buttons()
+        self._shared_config_timer = QtCore.QTimer(self)
+        self._shared_config_timer.setInterval(2500)
+        self._shared_config_timer.timeout.connect(self._sync_shared_config)
+        self._shared_config_timer.start()
 
-        if self._auto_start_enabled:
+        if self._show_setup_assistant_on_start:
+            QtCore.QTimer.singleShot(0, self._run_first_start_setup_assistant)
+        elif self._auto_start_enabled:
             QtCore.QTimer.singleShot(0, self._auto_start_if_valid)
 
     @staticmethod
@@ -315,7 +345,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.service_catalog.changed.connect(self._mark_dirty)
         self.service_catalog.notice.connect(lambda message: self._show_notice(message, "info"))
         self.service_catalog.test_requested.connect(self._test_translation_profile)
-        self.vllm_settings = VllmSettingsWidget()
         self.services_page = self._build_services_page()
         settings_page = self._build_settings_page()
         self.tabs.addTab(server_page, "Server")
@@ -538,6 +567,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_refresh_btn.clicked.connect(self._refresh_model_list)
         self.model_download_btn.clicked.connect(self._download_selected_model)
         self.model_select_combo.currentIndexChanged.connect(self._update_model_state)
+        self.model_select_combo.currentIndexChanged.connect(self._save_stt_model_selection)
         self.stt_language_input.currentTextChanged.connect(self._mark_dirty)
         self.stt_partial_check.toggled.connect(self._mark_dirty)
 
@@ -656,11 +686,6 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(0, 4, 4, 20)
         layout.setSpacing(14)
         layout.addWidget(self.service_catalog)
-        helper_header = QtWidgets.QLabel("Advanced vLLM launch helper")
-        helper_header.setObjectName("cardTitle")
-        layout.addWidget(helper_header)
-        self.vllm_settings.setMinimumHeight(560)
-        layout.addWidget(self.vllm_settings)
         notice = QtWidgets.QLabel(
             "Profiles are saved through the shared settings revision. The selection applies to the next capture."
         )
@@ -716,6 +741,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.restart_explainer.setObjectName("mutedText")
         self.restart_explainer.setWordWrap(True)
         behavior_layout.addWidget(self.restart_explainer)
+        setup_row = QtWidgets.QHBoxLayout()
+        setup_explainer = QtWidgets.QLabel(
+            "Detect NVIDIA VRAM again and choose a safe Whisper + local translation pair."
+        )
+        setup_explainer.setObjectName("mutedText")
+        setup_explainer.setWordWrap(True)
+        self.setup_assistant_btn = QtWidgets.QPushButton("Recommend model setup")
+        self.setup_assistant_btn.setProperty("kind", "secondary")
+        self.setup_assistant_btn.setAccessibleName("Recommend model setup")
+        setup_row.addWidget(setup_explainer, 1)
+        setup_row.addWidget(self.setup_assistant_btn)
+        behavior_layout.addLayout(setup_row)
         layout.addWidget(behavior)
 
         storage = self._card("Model storage")
@@ -744,6 +781,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(storage)
 
         self.open_settings_folder_btn.clicked.connect(self._open_settings_folder)
+        self.setup_assistant_btn.clicked.connect(self._run_setup_assistant)
         self.model_cache_btn.clicked.connect(self._browse_model_dir)
         self.model_cache_input.editingFinished.connect(self._model_storage_changed)
 
@@ -773,10 +811,10 @@ class MainWindow(QtWidgets.QMainWindow):
         label = next((label for label, item_key in self.NAV_ITEMS if item_key == key), "Server")
         subtitles = {
             "Server": "Start and manage the local STT backend.",
-            "Local translation": "On-device runtime · download GGUF models and run them with the built-in llama.cpp service.",
+            "Local translation": "Download a model to translate on this computer.",
             "STT models": "Choose defaults and manage downloaded speech recognition weights.",
             "Tuning": "Shape subtitle cleanup and stability for the next capture.",
-            "Translation services": "Provider profiles · configure service connections and legacy adapters; managed llama.cpp files live under Local translation.",
+            "Translation services": "Connect a translation service. For model downloads, open Local translation.",
             "Settings": "Appearance, persistence and lifecycle preferences.",
         }
         notices = {
@@ -804,10 +842,94 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dirty_label.style().unpolish(self.dirty_label)
             self.dirty_label.style().polish(self.dirty_label)
 
+    def _sync_shared_config(self) -> None:
+        """Show extension/backend edits in an open GUI when its form is clean."""
+        if self._dirty or self._loading_ui or self.download_worker is not None:
+            return
+        if getattr(self.local_models, "busy", False) or getattr(self.local_models, "worker", None):
+            return
+        try:
+            from backend.config_store import load_snapshot
+            config, revision = load_snapshot(self.config_path)
+        except (OSError, ValueError, TypeError):
+            return
+        if revision == self.config_revision:
+            return
+        self.config_revision = revision
+        self._load_config_into_ui(config)
+        self.status_bar.showMessage("Shared settings updated from the backend or extension", 4500)
+
+    def _save_stt_model_selection(self, *_args: object) -> None:
+        """Publish only the STT model; leave other form edits pending."""
+        if self._loading_ui:
+            return
+        model = self.model_select_combo.currentData()
+        if not model or model == self.config.get("stt", {}).get("model"):
+            return
+        updated = copy.deepcopy(self.config)
+        updated.setdefault("stt", {})["model"] = model
+        updated["stt"].pop("model_path", None)
+        try:
+            from backend.config_store import save_config
+            revision = save_config(self.config_path, updated, expected_revision=self.config_revision)
+        except Exception as exc:
+            self._mark_dirty()
+            self._show_notice(f"STT model was not saved: {exc}", "error")
+            return
+        self.config, self.config_revision = updated, revision
+        self.status_bar.showMessage("STT model saved · desktop default updates in the extension", 5000)
+
     def _show_notice(self, message: str, kind: str = "info") -> None:
         self.status_bar.showMessage(message, 6000)
         if hasattr(self, "server_status_detail") and kind == "error":
             self.server_status_detail.setText(message)
+
+    def _run_first_start_setup_assistant(self) -> None:
+        applied = self._run_setup_assistant(first_run=True)
+        # A new recommendation usually points to files that have not been
+        # downloaded yet. Keep the backend stopped so the next screen can
+        # explain that state instead of immediately opening a second prompt.
+        if not applied and self._auto_start_enabled:
+            QtCore.QTimer.singleShot(0, self._auto_start_if_valid)
+
+    def _run_setup_assistant(
+        self, _checked: bool = False, *, first_run: bool = False
+    ) -> bool:
+        hardware = detect_hardware()
+        dialog = SetupAssistantDialog(
+            hardware,
+            recommendations_for_hardware(hardware),
+            self,
+        )
+        accepted = dialog.exec() == QtWidgets.QDialog.Accepted
+        if accepted:
+            updated = apply_recommendation(
+                self._collect_config_from_ui(), dialog.selected_recommendation()
+            )
+        else:
+            if not first_run:
+                return False
+            updated = mark_setup_assistant_seen(self.config)
+
+        self._load_config_into_ui(updated)
+        if not self._save_config_to_disk():
+            return False
+        if accepted:
+            stt_nav = next(
+                index
+                for index, (_label, key) in enumerate(self.NAV_ITEMS)
+                if key == "stt"
+            )
+            self._navigate(stt_nav)
+            self._show_notice(
+                "Recommendation saved. Download the speech model here, then review the local translation download.",
+                "info",
+            )
+        elif first_run:
+            self._show_notice(
+                "Model setup skipped. You can run it later from Settings.", "info"
+            )
+        return accepted
 
     def _test_translation_profile(self, profile: object) -> None:
         """Run the saved profile through the backend's real test protocol."""
@@ -1011,7 +1133,10 @@ class MainWindow(QtWidgets.QMainWindow):
             QLabel#pageTitle {{ color: {colors['text']}; font-size: 29px; font-weight: 700; padding-bottom: 2px; }}
             QLabel#cardTitle {{ color: {colors['text']}; font-size: 16px; font-weight: 700; }}
             QLabel#cardTitleSmall {{ color: {colors['text']}; font-size: 13px; font-weight: 700; }}
-            QFrame#card, QFrame#pageHeaderCard, QGroupBox#card {{ background: {colors['card']}; border: 1px solid {colors['border']}; border-radius: 12px; }}
+            QFrame#card, QFrame#pageHeaderCard, QFrame#localOverviewCard, QGroupBox#card {{ background: {colors['card']}; border: 1px solid {colors['border']}; border-radius: 12px; }}
+            QFrame#localOverviewCard {{ border-left: 4px solid {colors['accent']}; }}
+            QLabel#details {{ color: {colors['text']}; font-size: 13px; }}
+            QLabel#localModelStatus {{ color: {colors['muted']}; background: {colors['secondary']}; border: 1px solid {colors['border']}; border-radius: 8px; padding: 10px 12px; }}
             QGroupBox#card {{ margin-top: 8px; padding: 16px 12px 12px 12px; }}
             QGroupBox#card::title {{ subcontrol-origin: margin; left: 14px; padding: 0 6px; color: {colors['text']}; font-weight: 700; }}
             QToolButton#navButton {{ background: transparent; color: {colors['muted']}; border: 1px solid transparent; border-radius: 9px; text-align: left; padding: 10px 12px; font-size: 13px; }}
@@ -1044,10 +1169,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QLabel#statusBadge[status="running"] {{ color: {colors['success']}; }}
             QLabel#statusBadge[status="error"] {{ color: {colors['error']}; background: {colors['danger']}; }}
             QLabel#runtimeNotice {{ background: {colors['secondary']}; border: 1px solid {colors['border']}; border-radius: 8px; color: {colors['muted']}; padding: 9px; }}
-            QFrame#vllmHeader {{ background: {colors['secondary']}; border: 1px solid {colors['border']}; border-left: 4px solid {colors['accent']}; border-radius: 10px; }}
             QLabel#eyebrow {{ color: {colors['accent']}; font-size: 10px; font-weight: 700; }}
             QLabel#sectionTitle {{ color: {colors['text']}; font-size: 20px; font-weight: 700; }}
-            QCheckBox#vllmActivation {{ color: {colors['text']}; font-size: 13px; font-weight: 600; }}
             QScrollArea {{ background: transparent; border: none; }}
             QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
             QScrollBar::handle:vertical {{ background: {colors['border']}; min-height: 28px; border-radius: 5px; }}
@@ -1420,6 +1543,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _model_storage_changed(self) -> None:
         self.local_models.set_root(self._get_local_model_root())
+        self.local_models.refresh_state()
         self._update_model_storage_paths()
         self._refresh_model_list()
         self._mark_dirty()
@@ -1555,13 +1679,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_local_model_activated(self, cfg: Dict[str, Any]) -> None:
         self.config = cfg
-        self.vllm_settings.load_from_config(cfg)
         self.service_catalog.load_from_config(cfg)
         self.status_bar.showMessage("Model available in the extension. Refresh desktop services.")
 
     def _on_local_model_deactivated(self, cfg: Dict[str, Any]) -> None:
         self.config = cfg
-        self.vllm_settings.load_from_config(cfg)
         self.service_catalog.load_from_config(cfg)
         self.status_bar.showMessage("Model choices updated; refresh desktop services in the extension.")
 
@@ -1619,7 +1741,6 @@ class MainWindow(QtWidgets.QMainWindow):
         cfg["gui"] = dict(cfg.get("gui") or {})
         cfg["gui"]["theme"] = self._theme_mode()
         cfg = self.service_catalog.collect_into_config(cfg)
-        cfg = self.vllm_settings.collect_into_config(cfg)
         self.local_models.set_root(
             storage_root / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME
         )
@@ -1736,7 +1857,6 @@ class MainWindow(QtWidgets.QMainWindow):
         except (TypeError, ValueError):
             self.stall_check_interval_input.setValue(STALL_CHECK_INTERVAL_DEFAULT)
 
-        self.vllm_settings.load_from_config(cfg)
         self.service_catalog.load_from_config(cfg)
         self.local_models.load_config(cfg)
         self._update_ws_url()

@@ -43,6 +43,19 @@ class FakeProvider:
         return await self.probe.run(self.profile_id, text)
 
 
+class ContextProvider:
+    profile_id = "context"
+    max_concurrency = 1
+    cancellation_safe = True
+
+    def __init__(self) -> None:
+        self.contexts: list[str] = []
+
+    async def atranslate(self, text, source_lang, target_lang=None, *, context=""):
+        self.contexts.append(context)
+        return text
+
+
 class TranslationSchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def test_enforces_global_and_per_profile_limits(self) -> None:
         scheduler = TranslationScheduler(
@@ -76,6 +89,20 @@ class TranslationSchedulerTests(unittest.IsolatedAsyncioTestCase):
             scheduler.translate(second, "two", "en"),
         )
         self.assertEqual(probe.max_by_profile["same"], 1)
+
+    async def test_optional_context_is_forwarded_without_breaking_legacy_provider(self) -> None:
+        scheduler = TranslationScheduler(global_max_concurrency=1)
+        provider = ContextProvider()
+        self.assertEqual(
+            await scheduler.translate(provider, "current", "en", context="stable source"),
+            "current",
+        )
+        self.assertEqual(provider.contexts, ["stable source"])
+        legacy = FakeProvider("legacy", 1, ConcurrencyProbe())
+        self.assertEqual(
+            await scheduler.translate(legacy, "current", "en", context="ignored"),
+            "current",
+        )
 
 
 if __name__ == "__main__":

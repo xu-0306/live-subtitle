@@ -1,0 +1,19 @@
+{
+  "passed": [
+    "health identifies this process and is ready",
+    "catalog v2 and stable identity",
+    "custom STT comes from directory",
+    "desktop language retained",
+    "legacy profile import acknowledged",
+    "new service visible without restart",
+    "catalog excludes credentials and endpoints",
+    "repeat import retains stable id",
+    "migration retains endpoint and API semantics",
+    "stale GUI save rejected",
+    "desktop save reflected in fresh catalog",
+    "v1 read protocol preserved",
+    "untrusted website cannot import"
+  ],
+  "backend_instance_verified": true,
+  "inference": false
+}

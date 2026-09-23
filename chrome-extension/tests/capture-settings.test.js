@@ -29,12 +29,13 @@ test('v2 keeps inherited defaults sparse and carries unseen explicit model/langu
     selection: { kind: 'profile', id: 'id' }, partial: true, stt: { model: 'small' },
   });
 });
-test('popup and options load the shared producer exactly once before its consumer', () => {
-  for (const page of ['../popup/popup.html', '../options/options.html']) {
-    const html = fs.readFileSync(path.join(__dirname, page), 'utf8');
-    assert.equal(html.split('capture-settings.js').length, 2);
-    assert.ok(html.indexOf('capture-settings.js') < html.lastIndexOf('popup.js'));
-  }
+test('popup loads its capture helper; options has its own management page', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../popup/popup.html'), 'utf8');
+  assert.equal(html.split('capture-settings.js').length, 2);
+  assert.ok(html.indexOf('capture-settings.js') < html.lastIndexOf('popup.js'));
+  const options = fs.readFileSync(path.join(__dirname, '../options/options.html'), 'utf8');
+  assert.ok(options.includes('options.js'));
+  assert.ok(!options.includes('popup.js'));
   const js = fs.readFileSync(path.join(__dirname, '../popup/popup.js'), 'utf8');
   assert.match(js, /globalThis\.STTCaptureSettings\.buildCaptureSettings/);
 });
