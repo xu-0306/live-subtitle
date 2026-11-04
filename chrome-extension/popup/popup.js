@@ -47,10 +47,22 @@
     });
   }
   function storageSet(values) {
-    if (!global.chrome?.storage?.local?.set) return Promise.resolve();
-    return new Promise((resolve) => {
-      try { global.chrome.storage.local.set(values, () => resolve()); } catch { resolve(); }
+    if (!global.chrome?.storage?.local?.set) return Promise.reject(new Error("Settings storage is unavailable"));
+    return new Promise((resolve, reject) => {
+      try { global.chrome.storage.local.set(values, () => {
+        const error = global.chrome.runtime?.lastError;
+        if (error) reject(new Error(error.message)); else resolve();
+      }); } catch (error) { reject(error); }
     });
+  }
+  async function persistSettings(values, appliesNow = false) {
+    try {
+      await storageSet(values);
+      setStatus(appliesNow ? "Saved · applies now" : "Saved · applies to next capture");
+      state.savedHintUntil = Date.now() + 2500;
+    } catch (error) {
+      setStatus(`Could not save: ${error.message || error}`, "error");
+    }
   }
   function sendRuntime(message) {
     if (!global.chrome?.runtime?.sendMessage) return Promise.resolve(null);
@@ -191,9 +203,11 @@
     themeStop: null,
     focusRefreshBound: false,
     initialized: false,
+    savedHintUntil: 0,
   };
 
   function setStatus(message, stateName = "idle") {
+    state.savedHintUntil = 0;
     const element = $("status");
     if (!element) return;
     element.textContent = text(message);
@@ -432,7 +446,7 @@
     const starting = ["starting", "loading", "connecting", "initializing", "stopping"].includes(normalizedPhase);
     setButtons(capturing, starting);
     const statusState = starting ? "starting" : capturing ? "active" : /error|offline|disconnect/i.test(phase) ? "error" : "idle";
-    setStatus(phase, statusState);
+    if (Date.now() >= state.savedHintUntil || statusState === "error") setStatus(phase, statusState);
     const indicator = $("connectionIndicator"); if (indicator?.dataset) indicator.dataset.state = capturing ? "active" : response.connected === false ? "error" : "idle";
     const snapshot = response.snapshot || response.captureSnapshot || null;
     const localOccupancy = Array.isArray(response.occupancy) ? response.occupancy.length : 0;
@@ -503,7 +517,8 @@
     const wsUrl = ($(KEYS.wsUrl)?.value || state.wsUrl || DEFAULT_WS_URL).trim() || DEFAULT_WS_URL;
     const settings = buildNextSettings(model, apiKey);
     setStatus("Starting…", "starting"); setButtons(false, true);
-    await storageSet({ [KEYS.wsUrl]: wsUrl });
+    try { await storageSet({ [KEYS.wsUrl]: wsUrl }); }
+    catch (error) { setStatus(`Could not save: ${error.message || error}`, "error"); setButtons(false); return; }
     const response = await sendRuntime({ type: "popup-start", tabId, wsUrl, settings });
     if (!response?.ok) { setStatus(`Could not start capture: ${response?.error || "extension unavailable"}`, "error"); setButtons(false); return; }
     setStatus("Connecting…", "starting");
@@ -520,7 +535,7 @@
     const translation = $("translationModelSelect");
     if (translation) {
       state.selectedTranslation = translation.value;
-      storageSet({ [KEYS.selectedTranslation]: state.selectedTranslation });
+      persistSettings({ [KEYS.selectedTranslation]: state.selectedTranslation });
     }
   }
   function persistSttSelection() {
@@ -528,11 +543,11 @@
     if (!stt) return;
     if (stt.value === "__desktop-default__") {
       state.sttMode = "inherit";
-      storageSet({ [KEYS.sttMode]: "inherit" });
+      persistSettings({ [KEYS.sttMode]: "inherit" });
     } else {
       state.sttMode = "override";
       state.selectedStt = stt.value;
-      storageSet({ [KEYS.sttMode]: "override", [KEYS.selectedStt]: state.selectedStt });
+      persistSettings({ [KEYS.sttMode]: "override", [KEYS.selectedStt]: state.selectedStt });
     }
     renderChoices();
   }
@@ -543,30 +558,30 @@
   function wireEvents() {
     $("translationModelSelect")?.addEventListener("change", persistTranslationSelection);
     $("sttModelSizeSelect")?.addEventListener("change", persistSttSelection);
-    $("sttModelModeSelect")?.addEventListener("change", (event) => { state.sttMode = event.target.value === "override" ? "override" : "inherit"; storageSet({ [KEYS.sttMode]: state.sttMode }); renderChoices(); });
-    $("translationLanguageModeSelect")?.addEventListener("change", (event) => { state.targetLanguageMode = event.target.value === "override" ? "override" : "inherit"; storageSet({ [KEYS.languageMode]: state.targetLanguageMode }); renderChoices(); });
-    const updateLanguage = (event) => { const input = event?.target || $("translationLanguageSelect"); state.targetLanguage = normalizeLanguage(input?.value); storageSet({ [KEYS.language]: state.targetLanguage }); };
+    $("sttModelModeSelect")?.addEventListener("change", (event) => { state.sttMode = event.target.value === "override" ? "override" : "inherit"; persistSettings({ [KEYS.sttMode]: state.sttMode }); renderChoices(); });
+    $("translationLanguageModeSelect")?.addEventListener("change", (event) => { state.targetLanguageMode = event.target.value === "override" ? "override" : "inherit"; persistSettings({ [KEYS.languageMode]: state.targetLanguageMode }); renderChoices(); });
+    const updateLanguage = (event) => { const input = event?.target || $("translationLanguageSelect"); state.targetLanguage = normalizeLanguage(input?.value); persistSettings({ [KEYS.language]: state.targetLanguage }); };
     $("translationLanguageSelect")?.addEventListener("input", updateLanguage);
     $("translationLanguageSelect")?.addEventListener("change", updateLanguage);
-    $("translationBehaviorSelect")?.addEventListener("change", (event) => { const value = event.target.value; state.partialMode = value === "inherit" ? "inherit" : "override"; state.partial = value === "partial"; storageSet({ [KEYS.partialMode]: state.partialMode, [KEYS.partial]: state.partial }); renderChoices(); });
+    $("translationBehaviorSelect")?.addEventListener("change", (event) => { const value = event.target.value; state.partialMode = value === "inherit" ? "inherit" : "override"; state.partial = value === "partial"; persistSettings({ [KEYS.partialMode]: state.partialMode, [KEYS.partial]: state.partial }); renderChoices(); });
     $("wsUrl")?.addEventListener("change", (event) => {
       const nextUrl = event.target.value.trim() || DEFAULT_WS_URL;
       if (nextUrl !== state.wsUrl) resetCatalogForEndpoint();
       state.wsUrl = nextUrl;
-      storageSet({ [KEYS.wsUrl]: state.wsUrl });
+      persistSettings({ [KEYS.wsUrl]: state.wsUrl }, true);
       refreshDesktopServices({ manual: true });
     });
     $("refreshDesktopServices")?.addEventListener("click", () => refreshDesktopServices({ manual: true }));
     $("startBtn")?.addEventListener("click", startCapture);
     $("stopBtn")?.addEventListener("click", stopCapture);
     $("openSettingsBtn")?.addEventListener("click", () => global.chrome?.runtime?.openOptionsPage?.());
-    $("themeSelect")?.addEventListener("change", (event) => { applyThemePreference(event.target.value); storageSet({ [KEYS.theme]: state.theme }); });
+    $("themeSelect")?.addEventListener("change", (event) => { applyThemePreference(event.target.value); persistSettings({ [KEYS.theme]: state.theme }, true); });
     if (!isOptionsPage) {
       const bindFontScale = (id, outputId, key) => {
         const input = $(id);
         input?.addEventListener("input", () => {
           const scale = renderFontScale(id, outputId, input.value);
-          storageSet({ [key]: scale });
+          persistSettings({ [key]: scale }, true);
         });
       };
       bindFontScale("subtitleOriginalSize", "subtitleOriginalSizeValue", KEYS.originalScale);

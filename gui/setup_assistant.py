@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from PySide6 import QtCore, QtWidgets
+from qfluentwidgets import (
+    BodyLabel, CaptionLabel, ComboBox, FluentStyleSheet, PrimaryPushButton,
+    PushButton, SubtitleLabel,
+)
 
 from backend.local_catalog import get_model
 from backend.local_runtime import (
@@ -13,6 +17,7 @@ from backend.local_runtime import (
     SHARED_VRAM_HEADROOM_MB,
     STT_VRAM_RESERVE_MB,
 )
+from gui.fluent_kit import make_card
 
 
 SETUP_ASSISTANT_VERSION = 1
@@ -214,15 +219,19 @@ class SetupAssistantDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        # Themed dialog background that follows light/dark without relying on the app palette.
+        FluentStyleSheet.DIALOG.apply(self)
         self.setWindowTitle("Recommended model setup")
         self.setModal(True)
         self.setMinimumWidth(560)
         self._recommendations = list(recommendations)
 
         root = QtWidgets.QVBoxLayout(self)
-        title = QtWidgets.QLabel("Choose a model pair for this computer")
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
+        title = SubtitleLabel("Choose a model pair for this computer")
         title.setObjectName("pageTitle")
-        intro = QtWidgets.QLabel(
+        intro = BodyLabel(
             "Live Subtitle sizes speech recognition and local translation together, "
             "because both may share the same GPU during capture."
         )
@@ -230,8 +239,7 @@ class SetupAssistantDialog(QtWidgets.QDialog):
         root.addWidget(title)
         root.addWidget(intro)
 
-        hardware_group = QtWidgets.QGroupBox("Detected hardware")
-        hardware_layout = QtWidgets.QVBoxLayout(hardware_group)
+        hardware_group = make_card("Detected hardware")
         if hardware.total_mb:
             detected = (
                 f"{hardware.name} · {hardware.total_mb / 1024:.1f} GiB total · "
@@ -239,13 +247,15 @@ class SetupAssistantDialog(QtWidgets.QDialog):
             )
         else:
             detected = hardware.name
-        self.hardware_label = QtWidgets.QLabel(detected)
+        self.hardware_label = BodyLabel(detected)
         self.hardware_label.setWordWrap(True)
-        hardware_layout.addWidget(self.hardware_label)
+        hardware_group.layout().addWidget(self.hardware_label)
         root.addWidget(hardware_group)
 
         form = QtWidgets.QFormLayout()
-        self.choice = QtWidgets.QComboBox()
+        form.setHorizontalSpacing(14)
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+        self.choice = ComboBox()
         for item in self._recommendations:
             self.choice.addItem(item.title)
         recommended_index = next(
@@ -253,32 +263,33 @@ class SetupAssistantDialog(QtWidgets.QDialog):
             0,
         )
         self.choice.setCurrentIndex(recommended_index)
-        form.addRow("Setup", self.choice)
+        form.addRow(BodyLabel("Setup"), self.choice)
         root.addLayout(form)
 
-        self.summary = QtWidgets.QLabel()
+        self.summary = BodyLabel()
         self.summary.setWordWrap(True)
         self.summary.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         root.addWidget(self.summary)
 
-        note = QtWidgets.QLabel(
+        note = CaptionLabel(
             "Applying saves the defaults only. Downloads do not start automatically. "
             "You can review the files and sizes on STT models and Local translation first. "
             "The translation choice becomes the default after its verified download finishes."
         )
+        note.setObjectName("mutedText")
         note.setWordWrap(True)
         root.addWidget(note)
 
-        buttons = QtWidgets.QDialogButtonBox()
-        self.apply_button = buttons.addButton(
-            "Use this setup", QtWidgets.QDialogButtonBox.AcceptRole
-        )
-        self.skip_button = buttons.addButton(
-            "Not now", QtWidgets.QDialogButtonBox.RejectRole
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        self.apply_button = PrimaryPushButton("Use this setup")
+        self.apply_button.setDefault(True)
+        self.skip_button = PushButton("Not now")
+        self.apply_button.clicked.connect(self.accept)
+        self.skip_button.clicked.connect(self.reject)
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(self.skip_button)
+        buttons.addWidget(self.apply_button)
+        root.addLayout(buttons)
 
         self.choice.currentIndexChanged.connect(self._refresh_summary)
         self._refresh_summary()

@@ -20,6 +20,7 @@ except ImportError:  # Fallback when running as a script.
 
 DEFAULT_CACHE_SIZE = 512
 DEFAULT_OLLAMA_KEEP_ALIVE = "5m"
+DEFAULT_OLLAMA_INITIAL_TIMEOUT_SEC = 60.0
 DEFAULT_OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 DEFAULT_OPENAI_TIMEOUT_SEC = 15
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
@@ -433,14 +434,23 @@ class OllamaTranslator(BaseTranslator):
         target_language: str,
         keep_alive: Optional[object] = None,
         cache_size: int = DEFAULT_CACHE_SIZE,
+        timeout_sec: float = 8.0,
     ) -> None:
         super().__init__(target_language, cache_size=cache_size)
         import ollama
 
-        self._client = ollama.Client(host=host)
+        self._timeout_sec = max(0.0, float(timeout_sec))
+        # Model loading can exceed the ordinary subtitle deadline.
+        self.initial_timeout_sec = max(self._timeout_sec, DEFAULT_OLLAMA_INITIAL_TIMEOUT_SEC)
+        self._client = ollama.Client(
+            host=host,
+            timeout=httpx.Timeout(self.initial_timeout_sec, connect=self._timeout_sec or 8.0),
+        )
+        self._host = host.rstrip("/")
         self._model = model
         self._keep_alive = _normalize_keep_alive(keep_alive)
         self._supports_keep_alive = _has_param(self._client.chat, "keep_alive")
+        self._supports_think = _has_param(self._client.chat, "think")
 
     def _translate_impl(
         self,
@@ -459,8 +469,39 @@ class OllamaTranslator(BaseTranslator):
         }
         if self._keep_alive is not None and self._supports_keep_alive:
             kwargs["keep_alive"] = self._keep_alive
+        if self._supports_think:
+            kwargs["think"] = False
         response = self._client.chat(**kwargs)
-        return response["message"]["content"].strip()
+        translated = response["message"]["content"].strip()
+        if translated:
+            self.initial_timeout_sec = 0.0
+        return translated
+
+    async def list_models(self) -> list[str]:
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self._client.list),
+                timeout=self._timeout_sec or DEFAULT_OLLAMA_INITIAL_TIMEOUT_SEC,
+            )
+        except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
+            raise RuntimeError(f"Ollama at {self._host} timed out while listing models") from exc
+        except (ConnectionError, httpx.ConnectError) as exc:
+            raise RuntimeError(f"Ollama at {self._host} is unreachable: {exc}") from exc
+        return [str(item.get("model") or item.get("name"))
+                for item in response["models"] if item.get("model") or item.get("name")]
+
+    async def health_check(self) -> Dict[str, Any]:
+        url = f"{self._host}/api/tags"
+        try:
+            models = await self.list_models()
+            model = self._model
+            if ":" not in model.rsplit("/", 1)[-1]:
+                model += ":latest"
+            if model not in models:
+                raise RuntimeError(f"Ollama model '{self._model}' is not pulled on {self._host}")
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "url": url}
+        return {"ok": True, "models": models, "url": url}
 
 
 class OpenAITranslator(BaseTranslator):
@@ -875,6 +916,7 @@ def build_translator(
             keep_alive=keep_alive,
             target_language=target_language,
             cache_size=cache_size,
+            timeout_sec=float(cfg.get("timeout_sec", 8.0)),
         )
 
     if engine in {"openai", "vllm", "openai_compatible"}:

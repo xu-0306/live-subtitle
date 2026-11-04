@@ -7,7 +7,14 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from PySide6 import QtCore, QtGui, QtSvg, QtWebSockets, QtWidgets
+from PySide6 import QtCore, QtGui, QtWebSockets, QtWidgets
+from qfluentwidgets import (
+    BodyLabel, CaptionLabel, CheckBox, ComboBox, EditableComboBox, FluentIcon,
+    FluentWindow, InfoBadge, InfoBar, InfoLevel, LineEdit, NavigationItemPosition,
+    PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton, ScrollArea, SimpleCardWidget,
+    SpinBox, StrongBodyLabel, Theme, TitleLabel, TransparentToolButton,
+    isDarkTheme, qconfig, setTheme, setThemeColor,
+)
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -17,6 +24,7 @@ from gui.backend_runner import BackendRunner
 from gui.download_worker import ModelDownloadWorker
 from gui.local_model_controller import LocalModelController
 from gui.service_catalog_widget import ServiceCatalogWidget
+from gui.wheel_guard import protect_wheel_controls
 from gui.setup_assistant import (
     SETUP_ASSISTANT_VERSION,
     SetupAssistantDialog,
@@ -43,64 +51,54 @@ STALL_TIMEOUT_DEFAULT = 15
 STALL_CHECK_INTERVAL_DEFAULT = 5
 
 
-_ICON_PATHS = {
-    "brand": "M12 2 3.5 6.5v11L12 22l8.5-4.5v-11L12 2Zm0 3.1 5.7 3v7.8l-5.7 3-5.7-3V8.1l5.7-3ZM8 10h2v4H8v-4Zm3 0h2v4h-2v-4Zm3 0h2v4h-2v-4Z",
-    "server": "M4 4h16v6H4V4Zm0 10h16v6H4v-6Zm3-7h2v1H7V7Zm0 10h2v1H7v-1Z",
-    "local": "M5 3h10l4 4v14H5V3Zm9 1v5h5M8 12h8M8 16h8",
-    "stt": "M4 10h2v4H4v-4Zm4-4h2v12H8V6Zm4-3h2v18h-2V3Zm4 6h2v9h-2V9Z",
-    "tuning": "M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-5 4v4",
-    "services": "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0 4a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z",
-    "settings": "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0-6 1 2.1a8 8 0 0 1 2 .8L17 3.7l2.3 2.3-1.2 2a8 8 0 0 1 .8 2L21 11v3l-2.1 1a8 8 0 0 1-.8 2l1.2 2-2.3 2.3-2-1.2a8 8 0 0 1-2 .8L12 23l-3-1-.2-2.1a8 8 0 0 1-2-.8l-2 1.2-2.3-2.3 1.2-2a8 8 0 0 1-.8-2L1 14v-3l2.1-1a8 8 0 0 1 .8-2l-1.2-2L5 3.7l2 1.2a8 8 0 0 1 2-.8L9 2h3Z",
-    "light": "M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M5.6 18.4 7 17m10-10 1.4-1.4M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z",
-    "dark": "M20 15.3A8 8 0 0 1 8.7 4 8.5 8.5 0 1 0 20 15.3Z",
-    "system": "M4 5h16v11H4V5Zm-2 14h20M9 19h6",
-    "start": "M7 4v16l13-8L7 4Z",
-    "stop": "M6 6h12v12H6V6Z",
-    "restart": "M20 11a8 8 0 1 0 1 4M20 5v6h-6",
-    "copy": "M8 8h11v12H8V8ZM5 16H4V4h12v1",
-    "folder": "M3 6h7l2 2h9v11H3V6Zm0 3h18",
-}
-
-
-def _svg_icon(name: str, color: str = "#2f76e8", size: int = 20) -> QtGui.QIcon:
-    path = _ICON_PATHS.get(name, _ICON_PATHS["services"])
-    svg = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
-        f'viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="1.8" '
-        'stroke-linecap="round" stroke-linejoin="round">'
-        f'<path d="{path}"/></svg>'
+def _fluent_palette(dark: bool) -> QtGui.QPalette:
+    """Application palette matching the Fluent theme, for widgets Fluent does not style."""
+    c = QtGui.QColor
+    window, base, button, text, muted = (
+        (c(32, 32, 32), c(43, 43, 43), c(50, 50, 50), c(255, 255, 255), c(160, 160, 160))
+        if dark
+        else (c(243, 243, 243), c(255, 255, 255), c(253, 253, 253), c(0, 0, 0), c(110, 110, 110))
     )
-    renderer = QtSvg.QSvgRenderer(QtCore.QByteArray(svg.encode("utf-8")))
-    image = QtGui.QImage(size, size, QtGui.QImage.Format_ARGB32_Premultiplied)
-    image.fill(QtCore.Qt.transparent)
-    painter = QtGui.QPainter(image)
-    renderer.render(painter)
-    painter.end()
-    return QtGui.QIcon(QtGui.QPixmap.fromImage(image))
+    accent = c(47, 118, 232)
+    palette = QtGui.QPalette()
+    for role, color in (
+        (QtGui.QPalette.Window, window), (QtGui.QPalette.WindowText, text),
+        (QtGui.QPalette.Base, base), (QtGui.QPalette.AlternateBase, button),
+        (QtGui.QPalette.Text, text), (QtGui.QPalette.Button, button),
+        (QtGui.QPalette.ButtonText, text), (QtGui.QPalette.ToolTipBase, base),
+        (QtGui.QPalette.ToolTipText, text), (QtGui.QPalette.PlaceholderText, muted),
+        (QtGui.QPalette.Highlight, accent), (QtGui.QPalette.HighlightedText, c(255, 255, 255)),
+        (QtGui.QPalette.Link, accent),
+    ):
+        palette.setColor(role, color)
+    for role in (QtGui.QPalette.Text, QtGui.QPalette.WindowText, QtGui.QPalette.ButtonText):
+        palette.setColor(QtGui.QPalette.Disabled, role, muted)
+    return palette
 
 
-class _ChevronSpinBox(QtWidgets.QSpinBox):
-    """Spin box with theme-safe chevrons over platform button wells."""
+class _PageIndexView:
+    """Legacy page-index view (the old QTabWidget API) over the Fluent page stack."""
 
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-        super().paintEvent(event)
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        color = self.palette().color(QtGui.QPalette.Link)
-        if not self.isEnabled():
-            color = self.palette().color(QtGui.QPalette.Disabled, QtGui.QPalette.Text)
-        pen = QtGui.QPen(color, 1.5, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin)
-        painter.setPen(pen)
-        x = self.width() - 10
-        upper_y = max(7, self.height() // 4)
-        lower_y = min(self.height() - 7, (self.height() * 3) // 4)
-        painter.drawLine(x - 3, upper_y + 2, x, upper_y - 1)
-        painter.drawLine(x, upper_y - 1, x + 3, upper_y + 2)
-        painter.drawLine(x - 3, lower_y - 2, x, lower_y + 1)
-        painter.drawLine(x, lower_y + 1, x + 3, lower_y - 2)
+    def __init__(self, window):
+        self.window = window
+
+    def count(self):
+        return len(self.window.pages)
+
+    def tabText(self, index):
+        return self.window.page_names[index]
+
+    def widget(self, index):
+        return self.window.pages[index]
+
+    def currentIndex(self):
+        return self.window._current_page
+
+    def setCurrentIndex(self, index):
+        self.window.switchTo(self.window.pages[index])
 
 
-class MainWindow(QtWidgets.QMainWindow):
+class MainWindow(FluentWindow):
     """Desktop control surface with a persistent sidebar and stacked pages.
 
     ``auto_start`` and ``setup_tray`` are explicit seams for offscreen render
@@ -117,6 +115,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ("Translation services", "services"),
         ("Settings", "settings"),
     )
+    NAV_EXPAND_WIDTH = 220
     NAV_TO_TAB = {
         "server": 0,
         "local": 1,
@@ -125,6 +124,8 @@ class MainWindow(QtWidgets.QMainWindow):
         "services": 5,
         "settings": 4,
     }
+
+    THEMES = {"light": Theme.LIGHT, "dark": Theme.DARK, "system": Theme.AUTO}
 
     def __init__(
         self,
@@ -165,6 +166,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._service_test_result_received = False
         self._loading_ui = False
         self._dirty = False
+        self._dirty_pages: set[int] = set()
+        self._current_page = 0
         gui_config = self.config.get("gui") if isinstance(self.config.get("gui"), dict) else {}
         try:
             setup_version = int(gui_config.get("setup_assistant_version", 0))
@@ -188,9 +191,16 @@ class MainWindow(QtWidgets.QMainWindow):
             not in {"1", "true", "yes", "on"}
         )
         self._ui_font_family = self._ensure_ui_font()
+        self.setFont(QtGui.QFont(self._ui_font_family, 10))
+        # Plain Qt widgets did not inherit the window font (they fell back to "Sans Serif 9").
+        QtWidgets.QApplication.setFont(QtGui.QFont(self._ui_font_family, 10))
+        setThemeColor("#2f76e8")  # the app's original brand blue (Fluent defaults to teal)
+        setTheme(self.THEMES[self._theme_mode()])
+        if QtGui.QGuiApplication.platformName() == "offscreen":
+            self.setMicaEffectEnabled(False)
 
         self._build_ui()
-        self._apply_styles(self._theme_mode())
+        protect_wheel_controls(self)
         self._load_config_into_ui(self.config)
         if self._setup_tray_enabled:
             self._setup_tray()
@@ -210,6 +220,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _ensure_ui_font() -> str:
         """Load the Windows UI font for offscreen/high-DPI rendering too."""
 
+        if QtGui.QGuiApplication.platformName() == "offscreen":
+            for path in (Path(os.getenv("WINDIR", "C:/Windows")) / "Fonts").glob("sego*.ttf"):
+                QtGui.QFontDatabase.addApplicationFont(str(path))
         candidates = (
             Path(os.getenv("WINDIR", "C:/Windows")) / "Fonts" / "segoeui.ttf",
             Path(os.getenv("WINDIR", "C:/Windows")) / "Fonts" / "arial.ttf",
@@ -224,117 +237,20 @@ class MainWindow(QtWidgets.QMainWindow):
         return "Sans Serif"
 
     def _build_ui(self) -> None:
-        central = QtWidgets.QWidget()
-        root = QtWidgets.QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        # Parent the hierarchy before constructing pages. PySide can otherwise
-        # collect temporary page/layout wrappers while this large UI is still
-        # being assembled, which invalidates child controls on Windows.
-        self.setCentralWidget(central)
-
-        self.sidebar = QtWidgets.QFrame()
-        self.sidebar.setObjectName("sidebar")
-        self.sidebar.setMinimumWidth(208)
-        self.sidebar.setMaximumWidth(240)
-        sidebar_layout = QtWidgets.QVBoxLayout(self.sidebar)
-        sidebar_layout.setContentsMargins(10, 20, 6, 16)
-        sidebar_layout.setSpacing(8)
-
-        brand_row = QtWidgets.QHBoxLayout()
-        brand_icon = QtWidgets.QLabel()
-        brand_icon.setObjectName("brandIcon")
-        brand_icon.setAlignment(QtCore.Qt.AlignCenter)
-        brand_icon.setPixmap(_svg_icon("brand", "#ffffff", 25).pixmap(25, 25))
-        brand_icon.setFixedSize(38, 38)
-        brand_row.addWidget(brand_icon)
-        brand_text = QtWidgets.QVBoxLayout()
-        brand_title = QtWidgets.QLabel("Live Subtitle")
-        brand_title.setObjectName("brandTitle")
-        brand_subtitle = QtWidgets.QLabel("Live speech and translation")
-        brand_subtitle.setObjectName("sidebarMuted")
-        brand_text.addWidget(brand_title)
-        brand_text.addWidget(brand_subtitle)
-        brand_row.addLayout(brand_text, 1)
-        sidebar_layout.addLayout(brand_row)
-        sidebar_layout.addSpacing(18)
-
-        self.nav_buttons: list[QtWidgets.QToolButton] = []
-        for index, (label, key) in enumerate(self.NAV_ITEMS):
-            button = QtWidgets.QToolButton()
-            button.setObjectName("navButton")
-            button.setText(label)
-            button.setIcon(_svg_icon(key, "#2f76e8", 20))
-            button.setIconSize(QtCore.QSize(20, 20))
-            button.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-            button.setCheckable(True)
-            button.setAutoExclusive(True)
-            button.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-            button.setMinimumHeight(42)
-            button.clicked.connect(lambda _checked=False, i=index: self._navigate(i))
-            sidebar_layout.addWidget(button)
-            self.nav_buttons.append(button)
-            if index == 0:
-                button.setChecked(True)
-
-        sidebar_layout.addStretch(1)
-        self.sidebar_hint = QtWidgets.QLabel("Local first · GPU optional")
-        self.sidebar_hint.setObjectName("sidebarMuted")
-        self.sidebar_hint.setWordWrap(True)
-        sidebar_layout.addWidget(self.sidebar_hint)
-        self.sidebar_version = QtWidgets.QLabel("Desktop app · private by default")
-        self.sidebar_version.setObjectName("sidebarMuted")
-        self.sidebar_version.setWordWrap(True)
-        sidebar_layout.addWidget(self.sidebar_version)
-        root.addWidget(self.sidebar)
-
-        content_root = QtWidgets.QWidget()
-        content_layout = QtWidgets.QVBoxLayout(content_root)
-        content_layout.setContentsMargins(26, 22, 26, 12)
-        content_layout.setSpacing(10)
-
-        header = QtWidgets.QHBoxLayout()
-        self.page_title = QtWidgets.QLabel("Server")
-        self.page_title.setObjectName("pageTitle")
-        self.page_subtitle = QtWidgets.QLabel("Start and manage the local STT backend.")
-        self.page_subtitle.setObjectName("mutedText")
-        self.page_subtitle.setWordWrap(True)
-        heading = QtWidgets.QVBoxLayout()
-        heading.addWidget(self.page_title)
-        heading.addWidget(self.page_subtitle)
-        header.addLayout(heading, 1)
-        theme_widget = QtWidgets.QWidget(content_root)
-        theme_row = QtWidgets.QHBoxLayout(theme_widget)
-        theme_row.setContentsMargins(0, 0, 0, 0)
-        theme_row.setSpacing(4)
-        self.theme_buttons: dict[str, QtWidgets.QToolButton] = {}
-        for mode, label in (("light", "☼ Light"), ("dark", "◐ Dark"), ("system", "▣ System")):
-            button = QtWidgets.QToolButton()
-            button.setObjectName("themeButton")
-            button.setText(label.replace("☼ ", "").replace("◐ ", "").replace("▣ ", ""))
-            button.setIcon(_svg_icon(mode, "#2f76e8", 17))
-            button.setIconSize(QtCore.QSize(17, 17))
-            button.setCheckable(True)
-            button.clicked.connect(lambda _checked=False, m=mode: self._set_theme_mode(m))
-            theme_row.addWidget(button)
-            self.theme_buttons[mode] = button
-        header.addWidget(theme_widget)
-        content_layout.addLayout(header)
-
-        self.tabs = QtWidgets.QTabWidget()
-        self.tabs.tabBar().hide()
-        self.tabs.setDocumentMode(True)
-        self.tabs.setObjectName("pageStack")
         server_page = self._build_server_tab()
         local_panel = QtWidgets.QWidget()
         self.local_models = LocalModelController(
             local_panel,
             self._model_storage_root_from_config(self.config)
             / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME,
-            lambda: self._collect_config_from_ui() if hasattr(self, "local_models") else self.config,
+            lambda: self.local_models.collect_into_config(self.config) if hasattr(self, "local_models") else self.config,
             self._persist_local_config,
             self,
         )
+        for key in ("model", "target", "context", "gpu_layers", "port"):
+            control = self.local_models.controls[key]
+            signal = control.currentTextChanged if hasattr(control, "currentTextChanged") else control.valueChanged
+            signal.connect(self._mark_dirty)
         self.local_models.activated.connect(self._on_local_model_activated)
         self.local_models.deactivated.connect(self._on_local_model_deactivated)
         self.local_models.failed.connect(lambda message: self._show_notice(message, "error"))
@@ -342,54 +258,65 @@ class MainWindow(QtWidgets.QMainWindow):
         stt_page = self._build_stt_tab()
         tuning_page = self._build_tuning_tab()
         self.service_catalog = ServiceCatalogWidget()
-        self.service_catalog.changed.connect(self._mark_dirty)
+        self.service_catalog.changed.connect(self._service_catalog_changed)
+        self.service_catalog.save_requested.connect(self._save_service)
         self.service_catalog.notice.connect(lambda message: self._show_notice(message, "info"))
         self.service_catalog.test_requested.connect(self._test_translation_profile)
         self.services_page = self._build_services_page()
         settings_page = self._build_settings_page()
-        self.tabs.addTab(server_page, "Server")
-        self.tabs.addTab(local_page, "Local translation")
-        self.tabs.addTab(stt_page, "STT models")
-        self.tabs.addTab(tuning_page, "Tuning")
-        self.tabs.addTab(settings_page, "Settings")
-        # Keep the established tab order for callers that use tabText() while
-        # the sidebar still presents Settings as its final utility item.
-        self.tabs.addTab(self.services_page, "Translation services")
-        self.tabs.currentChanged.connect(self._on_page_changed)
-        content_layout.addWidget(self.tabs, 1)
+        # Keys preserve the config/save contract; insertion order is navigation order.
+        self.pages = {0: server_page, 1: local_page, 2: stt_page, 3: tuning_page,
+                      5: self.services_page, 4: settings_page}
+        self.page_names = {self.NAV_TO_TAB[key]: label for label, key in self.NAV_ITEMS}
+        self.tabs = _PageIndexView(self)
+        # The library default (322 px) is ~36% of the 900 px minimum window; set it before the items exist.
+        self.navigationInterface.setExpandWidth(self.NAV_EXPAND_WIDTH)
+        icons = (FluentIcon.CONNECT, FluentIcon.LANGUAGE, FluentIcon.MICROPHONE,
+                 FluentIcon.SETTING, FluentIcon.CLOUD, FluentIcon.SETTING)
+        for (label, key), icon in zip(self.NAV_ITEMS, icons):
+            page = self.pages[self.NAV_TO_TAB[key]]
+            page.setObjectName(key)
+            page.widget().layout().insertWidget(0, TitleLabel(label))
+            self.addSubInterface(page, icon, label, isTransparent=True,
+                                 position=NavigationItemPosition.BOTTOM if key == "settings"
+                                 else NavigationItemPosition.TOP)
+        self.navigationInterface.setCollapsible(False)
+        self.navigationInterface.setReturnButtonVisible(False)
+        self.stackedWidget.currentChanged.connect(self._on_page_changed)
 
+        # FluentWindow is a QWidget: put the shared footer below its page stack.
+        self.widgetLayout.removeWidget(self.stackedWidget)
+        content = QtWidgets.QWidget(self)
+        layout = QtWidgets.QVBoxLayout(content)
+        # Bottom gap: on a real Win11 window the status text otherwise sits ~2 px from the rounded edge.
+        layout.setContentsMargins(0, 0, 0, 6)
+        layout.addWidget(self.stackedWidget, 1)
         footer = QtWidgets.QHBoxLayout()
-        self.dirty_label = QtWidgets.QLabel("All changes saved")
-        self.dirty_label.setObjectName("mutedText")
+        footer.setContentsMargins(24, 8, 24, 8)
+        self.dirty_label = CaptionLabel("")
+        self.dirty_label.setWordWrap(True)
         footer.addWidget(self.dirty_label)
         footer.addStretch(1)
-        self.restart_notice = QtWidgets.QLabel("Some changes apply on the next backend restart.")
-        self.restart_notice.setObjectName("mutedText")
-        footer.addWidget(self.restart_notice)
-        self.reset_btn = QtWidgets.QPushButton("Reset")
-        self.reset_btn.setProperty("kind", "secondary")
-        self.save_btn = QtWidgets.QPushButton("Save defaults")
+        self.restart_notice = CaptionLabel("")
+        self.restart_notice.setWordWrap(True)
+        footer.addWidget(self.restart_notice, 1)
+        self.reset_btn = PushButton("Reset")
+        self.save_btn = PrimaryPushButton("Save page")
         footer.addWidget(self.reset_btn)
         footer.addWidget(self.save_btn)
-        content_layout.addLayout(footer)
-
+        layout.addLayout(footer)
         self.status_bar = QtWidgets.QStatusBar()
-        self.status_bar.setObjectName("statusBar")
-        self.setStatusBar(self.status_bar)
+        self.status_bar.setSizeGripEnabled(False)
+        qconfig.themeChangedFinished.connect(self._update_status_palette)
+        self._update_status_palette()
+        layout.addWidget(self.status_bar)
         self.status_bar.showMessage("Ready to manage the backend")
         self.save_btn.clicked.connect(self._save_defaults)
         self.reset_btn.clicked.connect(self._reset_defaults)
-        root.addWidget(content_root, 1)
+        self.widgetLayout.addWidget(content)
         self._on_page_changed(0)
 
     def _build_server_tab(self) -> QtWidgets.QWidget:
-        tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(tab)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         content = QtWidgets.QWidget()
         body = QtWidgets.QVBoxLayout(content)
         body.setContentsMargins(0, 4, 4, 20)
@@ -399,18 +326,18 @@ class MainWindow(QtWidgets.QMainWindow):
         form = QtWidgets.QFormLayout()
         connection.layout().addLayout(form)
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
-        self.host_input = QtWidgets.QLineEdit()
+        self.host_input = LineEdit()
         self.host_input.setPlaceholderText("127.0.0.1")
-        self.port_input = _ChevronSpinBox()
+        self.port_input = SpinBox()
         self.port_input.setRange(1, 65535)
         self.port_input.setMaximumWidth(160)
         ws_container = QtWidgets.QWidget()
         ws_layout = QtWidgets.QHBoxLayout(ws_container)
         ws_layout.setContentsMargins(0, 0, 0, 0)
-        self.ws_url_input = QtWidgets.QLineEdit()
+        self.ws_url_input = LineEdit()
         self.ws_url_input.setReadOnly(True)
-        self.copy_ws_btn = QtWidgets.QPushButton("Copy address")
-        self.copy_ws_btn.setIcon(_svg_icon("copy"))
+        self.copy_ws_btn = PushButton("Copy address")
+        self.copy_ws_btn.setIcon(FluentIcon.COPY)
         self.copy_ws_btn.setProperty("kind", "secondary")
         ws_layout.addWidget(self.ws_url_input, 1)
         ws_layout.addWidget(self.copy_ws_btn)
@@ -422,24 +349,24 @@ class MainWindow(QtWidgets.QMainWindow):
         controls = self._card("Server controls")
         controls_layout = controls.layout()
         control_row = QtWidgets.QHBoxLayout()
-        self.start_btn = QtWidgets.QPushButton("Start backend")
-        self.start_btn.setIcon(_svg_icon("start"))
-        self.stop_btn = QtWidgets.QPushButton("Stop")
-        self.stop_btn.setIcon(_svg_icon("stop"))
+        self.start_btn = PrimaryPushButton("Start backend")
+        self.start_btn.setIcon(FluentIcon.PLAY_SOLID)
+        self.stop_btn = PushButton("Stop")
+        self.stop_btn.setIcon(FluentIcon.PAUSE_BOLD)
         self.stop_btn.setProperty("kind", "secondary")
-        self.restart_btn = QtWidgets.QPushButton("Restart")
-        self.restart_btn.setIcon(_svg_icon("restart"))
+        self.restart_btn = PushButton("Restart")
+        self.restart_btn.setIcon(FluentIcon.SYNC)
         self.restart_btn.setProperty("kind", "secondary")
         control_row.addWidget(self.start_btn)
         control_row.addWidget(self.stop_btn)
         control_row.addWidget(self.restart_btn)
         control_row.addStretch(1)
-        self.server_status = QtWidgets.QLabel("Stopped")
+        self.server_status = InfoBadge.info("Stopped")
         self.server_status.setObjectName("statusBadge")
         self.server_status.setProperty("status", "idle")
         control_row.addWidget(self.server_status)
         controls_layout.addLayout(control_row)
-        self.server_status_detail = QtWidgets.QLabel(
+        self.server_status_detail = BodyLabel(
             "Start the local service and confirm it is ready before connecting."
         )
         self.server_status_detail.setObjectName("mutedText")
@@ -447,18 +374,17 @@ class MainWindow(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.server_status_detail)
 
         error_row = QtWidgets.QHBoxLayout()
-        self.error_toggle = QtWidgets.QToolButton()
+        self.error_toggle = PushButton()
         self.error_toggle.setText("Details and diagnostics")
         self.error_toggle.setCheckable(True)
         self.error_toggle.setChecked(False)
-        self.error_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
-        self.logs_btn = QtWidgets.QPushButton("View logs")
+        self.logs_btn = PushButton("View logs")
         self.logs_btn.setProperty("kind", "secondary")
         error_row.addWidget(self.error_toggle)
         error_row.addStretch(1)
         error_row.addWidget(self.logs_btn)
         controls_layout.addLayout(error_row)
-        self.error_details = QtWidgets.QPlainTextEdit()
+        self.error_details = PlainTextEdit()
         self.error_details.setReadOnly(True)
         self.error_details.setMaximumHeight(110)
         self.error_details.setPlaceholderText("Backend diagnostics will appear here after a failed start.")
@@ -469,7 +395,7 @@ class MainWindow(QtWidgets.QMainWindow):
         lower = QtWidgets.QHBoxLayout()
         about = self._card("About the backend")
         about_layout = about.layout()
-        about_label = QtWidgets.QLabel(
+        about_label = BodyLabel(
             "The local service exposes WebSocket speech recognition and HTTP translation. "
             "Model downloads and profile saves are safe to manage while the server is stopped."
         )
@@ -478,7 +404,7 @@ class MainWindow(QtWidgets.QMainWindow):
         about_layout.addWidget(about_label)
         tips = self._card("Quick tips")
         tips_layout = tips.layout()
-        tips_label = QtWidgets.QLabel(
+        tips_label = BodyLabel(
             "• Keep the port available\n• Model loading happens when a capture selects it\n• Use View logs when a dependency fails\n• Save settings before restarting"
         )
         tips_label.setObjectName("mutedText")
@@ -488,8 +414,6 @@ class MainWindow(QtWidgets.QMainWindow):
         lower.addWidget(tips, 1)
         body.addLayout(lower)
         body.addStretch(1)
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
 
         self.host_input.textChanged.connect(self._update_ws_url)
         self.host_input.textChanged.connect(self._mark_dirty)
@@ -502,15 +426,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.error_toggle.toggled.connect(self.error_details.setVisible)
         self.error_toggle.toggled.connect(lambda _checked: self.error_toggle.setText("Details and diagnostics"))
         self.logs_btn.clicked.connect(self._show_logs_dialog)
-        return tab
+        return self._wrap_scroll_page(content)
 
     def _build_stt_tab(self) -> QtWidgets.QWidget:
-        tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(tab)
-        layout.setContentsMargins(0, 0, 0, 0)
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         content = QtWidgets.QWidget()
         body = QtWidgets.QVBoxLayout(content)
         body.setContentsMargins(0, 4, 4, 20)
@@ -520,9 +438,9 @@ class MainWindow(QtWidgets.QMainWindow):
         form = QtWidgets.QFormLayout()
         model_group.layout().addLayout(form)
 
-        self.model_select_combo = QtWidgets.QComboBox()
-        self.model_refresh_btn = QtWidgets.QPushButton("Refresh")
-        self.model_download_btn = QtWidgets.QPushButton("Download")
+        self.model_select_combo = ComboBox()
+        self.model_refresh_btn = PushButton("Refresh")
+        self.model_download_btn = PushButton("Download")
         model_select_row = QtWidgets.QWidget()
         model_select_layout = QtWidgets.QHBoxLayout(model_select_row)
         model_select_layout.setContentsMargins(0, 0, 0, 0)
@@ -530,30 +448,28 @@ class MainWindow(QtWidgets.QMainWindow):
         model_select_layout.addWidget(self.model_refresh_btn)
         model_select_layout.addWidget(self.model_download_btn)
 
-        self.download_progress = QtWidgets.QProgressBar()
+        self.download_progress = ProgressBar()
         self.download_progress.setValue(0)
-        self.download_progress.setTextVisible(True)
         self.download_progress.hide()
-        self.download_label = QtWidgets.QLabel("")
+        self.download_label = BodyLabel("")
 
         form.addRow("Default model", model_select_row)
         form.addRow("Download progress", self.download_progress)
         form.addRow("", self.download_label)
-        self.stt_language_input = QtWidgets.QComboBox()
-        self.stt_language_input.setEditable(True)
-        self.stt_language_input.addItem("Automatic", "auto")
-        self.stt_language_input.addItem("English", "en")
-        self.stt_language_input.addItem("日本語", "ja")
-        self.stt_language_input.addItem("繁體中文", "zh")
+        self.stt_language_input = EditableComboBox()
+        self.stt_language_input.addItem("Automatic", userData="auto")
+        self.stt_language_input.addItem("English", userData="en")
+        self.stt_language_input.addItem("日本語", userData="ja")
+        self.stt_language_input.addItem("繁體中文", userData="zh")
         self.stt_language_input.setToolTip("Open language values remain valid; enter a provider-supported code when needed.")
-        self.stt_partial_check = QtWidgets.QCheckBox("Show partial recognition updates")
+        self.stt_partial_check = CheckBox("Show partial recognition updates")
         form.addRow("Default language", self.stt_language_input)
         form.addRow("Recognition", self.stt_partial_check)
         body.addWidget(model_group)
 
         state_card = self._card("Availability")
         state_layout = state_card.layout()
-        self.model_state_label = QtWidgets.QLabel(
+        self.model_state_label = BodyLabel(
             "Installed models are selectable immediately. Missing models stay visible so the server can start without downloading them."
         )
         self.model_state_label.setObjectName("mutedText")
@@ -561,46 +477,38 @@ class MainWindow(QtWidgets.QMainWindow):
         state_layout.addWidget(self.model_state_label)
         body.addWidget(state_card)
         body.addStretch(1)
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
 
         self.model_refresh_btn.clicked.connect(self._refresh_model_list)
         self.model_download_btn.clicked.connect(self._download_selected_model)
         self.model_select_combo.currentIndexChanged.connect(self._update_model_state)
-        self.model_select_combo.currentIndexChanged.connect(self._save_stt_model_selection)
+        self.model_select_combo.currentIndexChanged.connect(self._mark_dirty)
         self.stt_language_input.currentTextChanged.connect(self._mark_dirty)
         self.stt_partial_check.toggled.connect(self._mark_dirty)
 
-        return tab
+        return self._wrap_scroll_page(content)
 
     def _build_tuning_tab(self) -> QtWidgets.QWidget:
-        tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(tab)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         content = QtWidgets.QWidget()
         body = QtWidgets.QVBoxLayout(content)
         body.setContentsMargins(0, 4, 4, 20)
         body.setSpacing(14)
 
-        cleanup_group = QtWidgets.QGroupBox("Subtitle cleanup")
-        cleanup_form = QtWidgets.QFormLayout(cleanup_group)
-        self.subtitle_max_chars_input = QtWidgets.QSpinBox()
+        cleanup_group = self._card("Subtitle cleanup")
+        cleanup_form = QtWidgets.QFormLayout()
+        cleanup_group.layout().addLayout(cleanup_form)
+        self.subtitle_max_chars_input = SpinBox()
         self.subtitle_max_chars_input.setRange(60, 2000)
         self.subtitle_max_chars_input.setValue(SUBTITLE_MAX_CHARS_DEFAULT)
-        self.subtitle_max_sentences_default_input = QtWidgets.QSpinBox()
+        self.subtitle_max_sentences_default_input = SpinBox()
         self.subtitle_max_sentences_default_input.setRange(1, 6)
         self.subtitle_max_sentences_default_input.setValue(SUBTITLE_MAX_SENTENCES_DEFAULT)
-        self.subtitle_max_sentences_cjk_input = QtWidgets.QSpinBox()
+        self.subtitle_max_sentences_cjk_input = SpinBox()
         self.subtitle_max_sentences_cjk_input.setRange(1, 6)
         self.subtitle_max_sentences_cjk_input.setValue(SUBTITLE_MAX_SENTENCES_CJK)
-        self.subtitle_history_lines_input = QtWidgets.QSpinBox()
+        self.subtitle_history_lines_input = SpinBox()
         self.subtitle_history_lines_input.setRange(1, 4)
         self.subtitle_history_lines_input.setValue(SUBTITLE_HISTORY_LINES_DEFAULT)
-        self.subtitle_show_partial_check = QtWidgets.QCheckBox("Show partial line")
+        self.subtitle_show_partial_check = CheckBox("Show partial line")
         cleanup_form.addRow("Max chars", self.subtitle_max_chars_input)
         cleanup_form.addRow(
             "Max sentences (Latin)", self.subtitle_max_sentences_default_input
@@ -613,12 +521,13 @@ class MainWindow(QtWidgets.QMainWindow):
         cleanup_group.setObjectName("card")
         body.addWidget(cleanup_group)
 
-        stability_group = QtWidgets.QGroupBox("STT stability")
-        stability_form = QtWidgets.QFormLayout(stability_group)
-        self.stall_timeout_input = QtWidgets.QSpinBox()
+        stability_group = self._card("STT stability")
+        stability_form = QtWidgets.QFormLayout()
+        stability_group.layout().addLayout(stability_form)
+        self.stall_timeout_input = SpinBox()
         self.stall_timeout_input.setRange(0, 300)
         self.stall_timeout_input.setValue(STALL_TIMEOUT_DEFAULT)
-        self.stall_check_interval_input = QtWidgets.QSpinBox()
+        self.stall_check_interval_input = SpinBox()
         self.stall_check_interval_input.setRange(0, 300)
         self.stall_check_interval_input.setValue(STALL_CHECK_INTERVAL_DEFAULT)
         stability_form.addRow("Stall timeout (sec)", self.stall_timeout_input)
@@ -627,13 +536,11 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         stability_group.setObjectName("card")
         body.addWidget(stability_group)
-        tuning_note = QtWidgets.QLabel("Subtitle cleanup applies to new capture sessions. Saving does not restart an active session.")
+        tuning_note = BodyLabel("Subtitle cleanup applies to new capture sessions. Saving does not restart an active session.")
         tuning_note.setObjectName("mutedText")
         tuning_note.setWordWrap(True)
         body.addWidget(tuning_note)
         body.addStretch(1)
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
 
         for widget in (
             self.subtitle_max_chars_input,
@@ -646,39 +553,31 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.valueChanged.connect(self._mark_dirty)
         self.subtitle_show_partial_check.toggled.connect(self._mark_dirty)
 
-        return tab
+        return self._wrap_scroll_page(content)
 
     @staticmethod
     def _card(title: str) -> QtWidgets.QFrame:
-        card = QtWidgets.QFrame()
+        card = SimpleCardWidget()
         card.setObjectName("card")
         layout = QtWidgets.QVBoxLayout(card)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(10)
-        label = QtWidgets.QLabel(title)
+        label = StrongBodyLabel(title)
         label.setObjectName("cardTitle")
         layout.addWidget(label)
         return card
 
     @staticmethod
     def _wrap_scroll_page(widget: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
-        scroll = QtWidgets.QScrollArea()
+        scroll = ScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        widget.layout().setContentsMargins(24, 18, 24, 24)
         scroll.setWidget(widget)
+        widget.setAutoFillBackground(False)
+        scroll.viewport().setAutoFillBackground(False)
         return scroll
-
-    @staticmethod
-    def _nav_glyph(key: str) -> str:
-        return {
-            "server": "▣",
-            "local": "▤",
-            "stt": "◫",
-            "tuning": "☷",
-            "services": "◎",
-            "settings": "⚙",
-        }.get(key, "•")
 
     def _build_services_page(self) -> QtWidgets.QWidget:
         content = QtWidgets.QWidget()
@@ -686,7 +585,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(0, 4, 4, 20)
         layout.setSpacing(14)
         layout.addWidget(self.service_catalog)
-        notice = QtWidgets.QLabel(
+        notice = BodyLabel(
             "Profiles are saved through the shared settings revision. The selection applies to the next capture."
         )
         notice.setObjectName("mutedText")
@@ -701,18 +600,14 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setSpacing(14)
         appearance = self._card("Appearance")
         appearance_layout = appearance.layout()
-        appearance_layout.addWidget(QtWidgets.QLabel("Choose how the desktop surface follows your display settings."))
-        row = QtWidgets.QHBoxLayout()
-        for mode, label in (("light", "Light"), ("dark", "Dark"), ("system", "System")):
-            button = QtWidgets.QPushButton(label)
-            button.setIcon(_svg_icon(mode, "#2f76e8", 16))
-            button.setIconSize(QtCore.QSize(16, 16))
-            button.setProperty("kind", "secondary")
-            button.clicked.connect(lambda _checked=False, m=mode: self._set_theme_mode(m))
-            row.addWidget(button)
-        row.addStretch(1)
-        appearance_layout.addLayout(row)
-        self.theme_status = QtWidgets.QLabel("System theme changes are applied when this window receives a palette update.")
+        appearance_layout.addWidget(BodyLabel("Choose how the desktop surface follows your display settings."))
+        self.theme_combo = ComboBox()
+        for mode in self.THEMES:
+            self.theme_combo.addItem(mode.title(), userData=mode)
+        self.theme_combo.currentIndexChanged.connect(
+            lambda i: self._set_theme_mode(self.theme_combo.itemData(i)))
+        appearance_layout.addWidget(self.theme_combo)
+        self.theme_status = BodyLabel("System theme changes are applied when this window receives a palette update.")
         self.theme_status.setObjectName("mutedText")
         self.theme_status.setWordWrap(True)
         appearance_layout.addWidget(self.theme_status)
@@ -723,31 +618,31 @@ class MainWindow(QtWidgets.QMainWindow):
         settings_row = QtWidgets.QWidget()
         settings_row_layout = QtWidgets.QHBoxLayout(settings_row)
         settings_row_layout.setContentsMargins(0, 0, 0, 0)
-        self.settings_location = QtWidgets.QLabel()
+        self.settings_location = BodyLabel()
         self.settings_location.setObjectName("mutedText")
         self.settings_location.setWordWrap(True)
         settings_row_layout.addWidget(self.settings_location, 1)
-        self.open_settings_folder_btn = QtWidgets.QToolButton()
+        self.open_settings_folder_btn = TransparentToolButton()
         self.open_settings_folder_btn.setObjectName("openSettingsFolderButton")
-        self.open_settings_folder_btn.setIcon(_svg_icon("folder", "#2f76e8", 18))
+        self.open_settings_folder_btn.setIcon(FluentIcon.FOLDER)
         self.open_settings_folder_btn.setIconSize(QtCore.QSize(18, 18))
         self.open_settings_folder_btn.setToolTip("Open settings folder")
         self.open_settings_folder_btn.setAccessibleName("Open settings folder")
         settings_row_layout.addWidget(self.open_settings_folder_btn, 0, QtCore.Qt.AlignTop)
         behavior_layout.addWidget(settings_row)
-        self.restart_explainer = QtWidgets.QLabel(
+        self.restart_explainer = BodyLabel(
             "Host, port, model defaults and profile edits are written atomically. Host/port changes apply after Restart; subtitle and language defaults apply to the next capture."
         )
         self.restart_explainer.setObjectName("mutedText")
         self.restart_explainer.setWordWrap(True)
         behavior_layout.addWidget(self.restart_explainer)
         setup_row = QtWidgets.QHBoxLayout()
-        setup_explainer = QtWidgets.QLabel(
+        setup_explainer = BodyLabel(
             "Detect NVIDIA VRAM again and choose a safe Whisper + local translation pair."
         )
         setup_explainer.setObjectName("mutedText")
         setup_explainer.setWordWrap(True)
-        self.setup_assistant_btn = QtWidgets.QPushButton("Recommend model setup")
+        self.setup_assistant_btn = PushButton("Recommend model setup")
         self.setup_assistant_btn.setProperty("kind", "secondary")
         self.setup_assistant_btn.setAccessibleName("Recommend model setup")
         setup_row.addWidget(setup_explainer, 1)
@@ -757,7 +652,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         storage = self._card("Model storage")
         storage_layout = storage.layout()
-        storage_help = QtWidgets.QLabel(
+        storage_help = BodyLabel(
             "One location for downloaded model assets. Whisper weights use Speech models; "
             "the built-in local translation runtime uses Local Translation Models."
         )
@@ -767,14 +662,14 @@ class MainWindow(QtWidgets.QMainWindow):
         storage_row = QtWidgets.QWidget()
         storage_row_layout = QtWidgets.QHBoxLayout(storage_row)
         storage_row_layout.setContentsMargins(0, 0, 0, 0)
-        self.model_cache_input = QtWidgets.QLineEdit()
+        self.model_cache_input = LineEdit()
         self.model_cache_input.setPlaceholderText(str(config_manager.get_default_model_storage_dir()))
         self.model_cache_input.setAccessibleName("Model storage directory")
-        self.model_cache_btn = QtWidgets.QPushButton("Browse")
+        self.model_cache_btn = PushButton("Browse")
         storage_row_layout.addWidget(self.model_cache_input, 1)
         storage_row_layout.addWidget(self.model_cache_btn)
         storage_layout.addWidget(storage_row)
-        self.model_storage_paths = QtWidgets.QLabel()
+        self.model_storage_paths = BodyLabel()
         self.model_storage_paths.setObjectName("mutedText")
         self.model_storage_paths.setWordWrap(True)
         storage_layout.addWidget(self.model_storage_paths)
@@ -783,11 +678,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.open_settings_folder_btn.clicked.connect(self._open_settings_folder)
         self.setup_assistant_btn.clicked.connect(self._run_setup_assistant)
         self.model_cache_btn.clicked.connect(self._browse_model_dir)
+        self.model_cache_input.textChanged.connect(self._mark_dirty)
         self.model_cache_input.editingFinished.connect(self._model_storage_changed)
 
         about = self._card("About")
         about_layout = about.layout()
-        about_text = QtWidgets.QLabel(
+        about_text = BodyLabel(
             "Live Subtitle · desktop control app\n"
             "Turn browser audio into live captions with optional translation."
         )
@@ -798,49 +694,88 @@ class MainWindow(QtWidgets.QMainWindow):
         return self._wrap_scroll_page(tab)
 
     def _navigate(self, index: int) -> None:
-        if not (0 <= index < len(self.NAV_ITEMS)):
-            return
-        key = self.NAV_ITEMS[index][1]
-        self.tabs.setCurrentIndex(self.NAV_TO_TAB.get(key, index))
+        if 0 <= index < len(self.NAV_ITEMS):
+            self.switchTo(self.pages[self.NAV_TO_TAB[self.NAV_ITEMS[index][1]]])
 
-    def _on_page_changed(self, index: int) -> None:
-        if not (0 <= index < self.tabs.count()):
+    def _on_page_changed(self, _index: int) -> None:
+        index = next(i for i, page in self.pages.items()
+                     if page is self.stackedWidget.currentWidget())
+        previous = self._current_page
+        pending_page = next(iter(self._dirty_pages)) if len(self._dirty_pages) == 1 else None
+        if index != previous and self._dirty and not self._resolve_unsaved_changes(pending_page):
+            self.stackedWidget.blockSignals(True)
+            self.switchTo(self.pages[previous])
+            self.stackedWidget.blockSignals(False)
+            self.navigationInterface.setCurrentItem(self.pages[previous].objectName())
             return
-        tab_to_nav = {value: key for key, value in self.NAV_TO_TAB.items()}
-        key = tab_to_nav.get(index, "server")
-        label = next((label for label, item_key in self.NAV_ITEMS if item_key == key), "Server")
-        subtitles = {
-            "Server": "Start and manage the local STT backend.",
-            "Local translation": "Download a model to translate on this computer.",
-            "STT models": "Choose defaults and manage downloaded speech recognition weights.",
-            "Tuning": "Shape subtitle cleanup and stability for the next capture.",
-            "Translation services": "Connect a translation service. For model downloads, open Local translation.",
-            "Settings": "Appearance, persistence and lifecycle preferences.",
-        }
+        self._current_page = index
+        label = self.page_names[index]
         notices = {
             "Server": "Restart to apply host and port.",
             "Local translation": "Install or remove files immediately.",
             "STT models": "Defaults apply to the next capture.",
             "Tuning": "Applies to the next capture.",
             "Translation services": "Applies to the next capture.",
-            "Settings": "Theme applies now; saved with revision.",
+            "Settings": "Theme previews now; Save page to keep it.",
         }
-        self.page_title.setText(label)
-        self.page_subtitle.setText(subtitles.get(label, ""))
-        if hasattr(self, "restart_notice"):
-            self.restart_notice.setText(notices.get(label, ""))
-        for i, button in enumerate(self.nav_buttons):
-            button.setChecked(self.NAV_ITEMS[i][1] == key)
+        self.restart_notice.setText(notices.get(label, ""))
+        self.save_btn.setVisible(index in self.PAGE_FIELDS)
 
     def _mark_dirty(self, *_args: object) -> None:
         if self._loading_ui:
             return
-        self._dirty = True
-        if hasattr(self, "dirty_label"):
-            self.dirty_label.setText("Unsaved changes")
-            self.dirty_label.setProperty("status", "warning")
-            self.dirty_label.style().unpolish(self.dirty_label)
-            self.dirty_label.style().polish(self.dirty_label)
+        page = self._current_page
+        sender = self.sender()
+        if isinstance(sender, QtWidgets.QWidget):
+            page = next((i for i, widget in self.pages.items()
+                         if widget.isAncestorOf(sender)), page)
+        self._dirty_pages.add(page)
+        self._update_dirty_indicator()
+
+    def _update_dirty_indicator(self) -> None:
+        self._dirty = bool(self._dirty_pages)
+        names = ", ".join(self.page_names[i] for i in sorted(self._dirty_pages) if i in self.PAGE_FIELDS)
+        self.dirty_label.setText(f"Unsaved: {names}" if names else "")
+        self.dirty_label.setProperty("status", "warning" if names else "idle")
+        self.dirty_label.style().unpolish(self.dirty_label)
+        self.dirty_label.style().polish(self.dirty_label)
+
+    def _service_catalog_changed(self) -> None:
+        if self._loading_ui:
+            return
+        if self.service_catalog.has_unsaved_changes():
+            self._dirty_pages.add(5)
+        else:
+            self._dirty_pages.discard(5)
+        self._update_dirty_indicator()
+
+    def _save_service(self) -> bool:
+        updated = self.service_catalog.collect_into_config(self.config)
+        if not self._save_config_to_disk(updated=updated, page=5):
+            self.service_catalog.editor_status.setText("Unsaved · save failed")
+            return False
+        self._show_notice("Service saved · applies to the next capture")
+        return True
+
+    def _resolve_unsaved_changes(self, page: int | None = None) -> bool:
+        if not self._dirty:
+            return True
+        names = self.page_names[page] if page is not None else ", ".join(
+            self.page_names[i] for i in sorted(self._dirty_pages))
+        answer = QtWidgets.QMessageBox.question(
+            self, "Unsaved settings", f"Save changes to {names} before continuing?",
+            QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel,
+        )
+        if answer == QtWidgets.QMessageBox.Save:
+            return self._save_page(page) if page is not None else self._save_config_to_disk()
+        if answer == QtWidgets.QMessageBox.Discard:
+            self._load_config_into_ui(self.config, page=page)
+            if page is not None:
+                self._dirty_pages.discard(page)
+                self._update_dirty_indicator()
+            return True
+        return False
 
     def _sync_shared_config(self) -> None:
         """Show extension/backend edits in an open GUI when its form is clean."""
@@ -859,28 +794,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._load_config_into_ui(config)
         self.status_bar.showMessage("Shared settings updated from the backend or extension", 4500)
 
-    def _save_stt_model_selection(self, *_args: object) -> None:
-        """Publish only the STT model; leave other form edits pending."""
-        if self._loading_ui:
-            return
-        model = self.model_select_combo.currentData()
-        if not model or model == self.config.get("stt", {}).get("model"):
-            return
-        updated = copy.deepcopy(self.config)
-        updated.setdefault("stt", {})["model"] = model
-        updated["stt"].pop("model_path", None)
-        try:
-            from backend.config_store import save_config
-            revision = save_config(self.config_path, updated, expected_revision=self.config_revision)
-        except Exception as exc:
-            self._mark_dirty()
-            self._show_notice(f"STT model was not saved: {exc}", "error")
-            return
-        self.config, self.config_revision = updated, revision
-        self.status_bar.showMessage("STT model saved · desktop default updates in the extension", 5000)
-
     def _show_notice(self, message: str, kind: str = "info") -> None:
         self.status_bar.showMessage(message, 6000)
+        factory = {"error": InfoBar.error, "warning": InfoBar.warning}.get(kind, InfoBar.info)
+        bar = factory("", message, parent=self, duration=6000)
+        bar.setMaximumWidth(max(300, self.width() - 48))
+        bar.contentLabel.setWordWrap(True)
+        bar.adjustSize()
         if hasattr(self, "server_status_detail") and kind == "error":
             self.server_status_detail.setText(message)
 
@@ -895,6 +815,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _run_setup_assistant(
         self, _checked: bool = False, *, first_run: bool = False
     ) -> bool:
+        if not self._resolve_unsaved_changes():
+            return False
         hardware = detect_hardware()
         dialog = SetupAssistantDialog(
             hardware,
@@ -932,7 +854,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return accepted
 
     def _test_translation_profile(self, profile: object) -> None:
-        """Run the saved profile through the backend's real test protocol."""
+        """Test the current service draft without publishing it."""
 
         if not isinstance(profile, dict):
             self._show_notice("Select a saved service before testing it.", "error")
@@ -942,10 +864,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._show_notice("This service has no stable ID to test.", "error")
             return
         if self.backend_runner is None or not self.backend_runner.isRunning() or self.server_status.text() != "Ready":
-            self._show_notice("Start the backend and wait for Ready before testing a service.", "error")
-            return
-        if self._dirty:
-            self._show_notice("Save changes before testing this service.", "error")
+            self.service_catalog.editor_status.setText("Start the backend and wait for Ready before testing a service.")
             return
 
         old_socket = self._service_test_socket
@@ -961,6 +880,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._service_test_socket = socket
         self._service_test_result_received = False
         self.service_catalog.set_test_busy(True)
+        self.service_catalog.editor_status.setText("Testing connection…")
         socket.connected.connect(
             lambda: socket.sendTextMessage(
                 json.dumps(
@@ -968,6 +888,13 @@ class MainWindow(QtWidgets.QMainWindow):
                         "type": "test",
                         "target": "translation",
                         "version": 2,
+                        "action": "translate",
+                        "draft_profile": {
+                            **{key: value for key, value in profile.items() if not key.startswith("_")},
+                            "engine": {"api": "openai_compatible", "ollama": "ollama", "nllb": "nllb"}.get(
+                                profile.get("kind"), profile.get("engine")
+                            ),
+                        },
                         "translation": {
                             "selection": {"kind": "profile", "id": profile_id}
                         },
@@ -984,7 +911,7 @@ class MainWindow(QtWidgets.QMainWindow):
             lambda: self._finish_service_test(False, "Service test timed out.")
         )
         self._service_test_timer = timer
-        timer.start(10000)
+        timer.start(90000)  # Allow the provider's first-request model load timeout.
         host = self.host_input.text().strip() or "127.0.0.1"
         if host == "0.0.0.0":
             host = "127.0.0.1"
@@ -1037,42 +964,66 @@ class MainWindow(QtWidgets.QMainWindow):
             socket.close()
             socket.deleteLater()
         self.service_catalog.set_test_busy(False)
-        self._show_notice(("Service test passed: " if ok else "Service test failed: ") + message, "info" if ok else "error")
+        self.service_catalog.editor_status.setText(("Test passed: " if ok else "Test failed: ") + message)
 
     def _show_logs_dialog(self) -> None:
         dialog = QtWidgets.QDialog(self)
+        dialog.setPalette(self.status_bar.palette())
         dialog.setWindowTitle("Backend logs")
         dialog.resize(760, 420)
         layout = QtWidgets.QVBoxLayout(dialog)
-        output = QtWidgets.QPlainTextEdit()
+        output = PlainTextEdit()
         output.setReadOnly(True)
         lines = getattr(self, "_log_lines", [])
         output.setPlainText("\n".join(lines) or "No backend output captured yet.")
         layout.addWidget(output)
-        close_btn = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
-        close_btn.rejected.connect(dialog.reject)
+        close_btn = PushButton("Close")
+        close_btn.clicked.connect(dialog.reject)
         layout.addWidget(close_btn)
         dialog.exec()
 
+    def _reapply_mica(self) -> None:
+        # Qt resets the DWM backdrop when the application palette changes, so the Mica
+        # light/dark choice that Fluent just applied is lost; re-assert it for the live theme.
+        if self.isVisible() and self.isMicaEffectEnabled():
+            self.windowEffect.setMicaEffect(self.winId(), isDarkTheme())
+
+    def _update_status_palette(self) -> None:
+        # Plain Qt widgets (labels, list views, QMessageBox) read the application palette,
+        # which Fluent does not touch, so keep it in step with the Fluent theme. The flag
+        # stops our own palette change from re-triggering the system-theme refresh in event().
+        self._palette_syncing = True
+        try:
+            QtWidgets.QApplication.setPalette(_fluent_palette(isDarkTheme()))
+        finally:
+            self._palette_syncing = False
+        self._reapply_mica()
+        QtCore.QTimer.singleShot(0, self._reapply_mica)  # Qt may apply the palette change late
+        palette = self.status_bar.palette()
+        palette.setColor(QtGui.QPalette.Window, QtGui.QColor(32, 32, 32) if isDarkTheme()
+                         else QtGui.QColor(240, 244, 249))
+        palette.setColor(QtGui.QPalette.WindowText, QtCore.Qt.white if isDarkTheme() else QtCore.Qt.black)
+        self.status_bar.setPalette(palette)
+
     def _theme_mode(self) -> str:
+        if hasattr(self, "_theme_preference"):
+            return self._theme_preference
         gui = self.config.get("gui") if isinstance(self.config, dict) else {}
         gui_map = gui if isinstance(gui, dict) else {}
         value = str(gui_map.get("theme") or "system").strip().lower()
         return value if value in {"light", "dark", "system"} else "system"
 
-    def _effective_theme(self, mode: str) -> str:
-        if mode in {"light", "dark"}:
-            return mode
-        palette = QtWidgets.QApplication.palette()
-        return "dark" if palette.color(QtGui.QPalette.Window).lightness() < 150 else "light"
-
     def _set_theme_mode(self, mode: str, *, persist: bool = True) -> None:
-        if mode not in {"light", "dark", "system"}:
+        if mode not in self.THEMES:
             return
-        self.config.setdefault("gui", {})["theme"] = mode
-        self._apply_styles(mode)
-        for key, button in getattr(self, "theme_buttons", {}).items():
-            button.setChecked(key == mode)
+        self._theme_preference = mode
+        if mode == "system":
+            qconfig.theme = Theme.AUTO
+        setTheme(self.THEMES[mode])
+        if hasattr(self, "theme_combo"):
+            self.theme_combo.blockSignals(True)
+            self.theme_combo.setCurrentIndex(self.theme_combo.findData(mode))
+            self.theme_combo.blockSignals(False)
         if hasattr(self, "theme_status"):
             self.theme_status.setText(
                 f"Theme preference: {mode.title()}. System follows the current OS palette."
@@ -1081,111 +1032,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._save_ui_preference()
 
     def _save_ui_preference(self) -> None:
-        """Persist only the selected theme without claiming service activity."""
-
-        cfg = copy.deepcopy(self.config)
-        cfg.setdefault("gui", {})["theme"] = self._theme_mode()
-        try:
-            try:
-                from backend import config_store  # type: ignore
-            except ImportError:
-                config_store = None
-            if config_store is not None and callable(getattr(config_store, "save_config", None)):
-                self.config_revision = config_store.save_config(
-                    self.config_path,
-                    cfg,
-                    expected_revision=self.config_revision,
-                )
-            else:
-                config_manager.write_config(self.config_path, cfg)
-            self.config = cfg
-        except Exception as exc:
-            self._show_notice(f"Theme preference could not be saved: {exc}", "error")
-
-    def _apply_styles(self, mode: str | None = None) -> None:
-        requested = mode or self._theme_mode()
-        effective = self._effective_theme(requested)
-        if effective == "dark":
-            colors = {
-                "window": "#0a121d", "sidebar": "#0f1b2a", "card": "#111c2a",
-                "input": "#162438", "border": "#2a405d", "text": "#edf4ff",
-                "muted": "#95a8c3", "accent": "#3182f6", "accent_hover": "#4b98ff",
-                "secondary": "#18293f", "secondary_hover": "#203752", "danger": "#4b2630",
-                "success": "#36c98d", "warning": "#f0b35b", "error": "#ff7b86",
-            }
-        else:
-            colors = {
-                "window": "#f5f9fe", "sidebar": "#edf4fc", "card": "#ffffff",
-                "input": "#fbfdff", "border": "#d7e4f3", "text": "#172a49",
-                "muted": "#607696", "accent": "#2f76e8", "accent_hover": "#2465d2",
-                "secondary": "#edf4ff", "secondary_hover": "#e1edff", "danger": "#fff0f1",
-                "success": "#168d64", "warning": "#a56812", "error": "#c13e4c",
-            }
-        self.setStyleSheet(
-            f"""
-            QWidget {{ background: {colors['window']}; color: {colors['text']}; font-family: "{self._ui_font_family}"; font-size: 13px; }}
-            QLabel {{ background: transparent; }}
-            QMainWindow {{ background: {colors['window']}; }}
-            QFrame#sidebar {{ background: {colors['sidebar']}; border-right: 1px solid {colors['border']}; }}
-            QLabel#brandIcon {{ background: {colors['accent']}; color: white; border-radius: 11px; font-size: 13px; font-weight: 700; min-width: 38px; min-height: 38px; }}
-            QLabel#brandTitle {{ color: {colors['text']}; font-size: 13px; font-weight: 700; }}
-            QLabel#sidebarMuted, QLabel#mutedText {{ color: {colors['muted']}; }}
-            QLabel#pageTitle {{ color: {colors['text']}; font-size: 29px; font-weight: 700; padding-bottom: 2px; }}
-            QLabel#cardTitle {{ color: {colors['text']}; font-size: 16px; font-weight: 700; }}
-            QLabel#cardTitleSmall {{ color: {colors['text']}; font-size: 13px; font-weight: 700; }}
-            QFrame#card, QFrame#pageHeaderCard, QFrame#localOverviewCard, QGroupBox#card {{ background: {colors['card']}; border: 1px solid {colors['border']}; border-radius: 12px; }}
-            QFrame#localOverviewCard {{ border-left: 4px solid {colors['accent']}; }}
-            QLabel#details {{ color: {colors['text']}; font-size: 13px; }}
-            QLabel#localModelStatus {{ color: {colors['muted']}; background: {colors['secondary']}; border: 1px solid {colors['border']}; border-radius: 8px; padding: 10px 12px; }}
-            QGroupBox#card {{ margin-top: 8px; padding: 16px 12px 12px 12px; }}
-            QGroupBox#card::title {{ subcontrol-origin: margin; left: 14px; padding: 0 6px; color: {colors['text']}; font-weight: 700; }}
-            QToolButton#navButton {{ background: transparent; color: {colors['muted']}; border: 1px solid transparent; border-radius: 9px; text-align: left; padding: 10px 12px; font-size: 13px; }}
-            QToolButton#navButton:hover {{ background: {colors['secondary_hover']}; color: {colors['text']}; }}
-            QToolButton#navButton:checked {{ background: {colors['secondary']}; color: {colors['accent']}; border-left: 3px solid {colors['accent']}; padding-left: 9px; font-weight: 700; }}
-            QToolButton#themeButton {{ background: transparent; color: {colors['muted']}; border: 1px solid {colors['border']}; border-radius: 7px; padding: 7px 9px; }}
-            QToolButton {{ background: {colors['secondary']}; color: {colors['muted']}; border: 1px solid {colors['border']}; border-radius: 7px; padding: 6px 10px; }}
-            QToolButton#themeButton:checked {{ background: {colors['secondary']}; color: {colors['accent']}; border-color: {colors['accent']}; }}
-            QCheckBox, QRadioButton {{ background: transparent; }}
-            QPushButton {{ background: {colors['accent']}; color: white; border: 1px solid {colors['accent']}; border-radius: 8px; padding: 8px 14px; min-height: 16px; }}
-            QPushButton:hover {{ background: {colors['accent_hover']}; }}
-            QPushButton:disabled {{ background: {colors['border']}; color: {colors['muted']}; border-color: {colors['border']}; }}
-            QPushButton[kind="secondary"] {{ background: {colors['secondary']}; color: {colors['accent']}; border-color: {colors['border']}; }}
-            QPushButton[kind="secondary"]:hover {{ background: {colors['secondary_hover']}; }}
-            QPushButton[kind="danger"] {{ background: {colors['danger']}; color: {colors['error']}; border-color: {colors['error']}; }}
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QListWidget {{ background: {colors['input']}; color: {colors['text']}; border: 1px solid {colors['border']}; border-radius: 8px; padding: 7px 9px; selection-background-color: {colors['accent']}; }}
-            QLineEdit:read-only {{ background: {colors['secondary']}; }}
-            QComboBox::drop-down {{ width: 22px; border: none; border-left: 1px solid {colors['border']}; background: {colors['secondary']}; border-top-right-radius: 7px; border-bottom-right-radius: 7px; }}
-            QAbstractSpinBox {{ padding-right: 20px; }}
-            QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ width: 18px; border: none; border-left: 1px solid {colors['border']}; background: {colors['secondary']}; }}
-            QAbstractSpinBox::up-button {{ border-top-right-radius: 7px; }}
-            QAbstractSpinBox::down-button {{ border-bottom-right-radius: 7px; }}
-            QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover, QComboBox::drop-down:hover {{ background: {colors['secondary_hover']}; }}
-            QListWidget::item {{ padding: 9px 7px; border-radius: 7px; }}
-            QListWidget::item:selected {{ background: {colors['secondary']}; color: {colors['accent']}; }}
-            QPlainTextEdit#commandPreview {{ font-family: "Cascadia Mono", "Consolas"; color: {colors['success']}; }}
-            QProgressBar {{ background: {colors['input']}; border: 1px solid {colors['border']}; border-radius: 6px; text-align: center; height: 14px; }}
-            QProgressBar::chunk {{ background: {colors['accent']}; border-radius: 6px; }}
-            QLabel#statusBadge {{ background: {colors['secondary']}; color: {colors['accent']}; border: 1px solid {colors['border']}; border-radius: 10px; padding: 6px 10px; font-weight: 700; }}
-            QLabel#statusBadge[status="running"] {{ color: {colors['success']}; }}
-            QLabel#statusBadge[status="error"] {{ color: {colors['error']}; background: {colors['danger']}; }}
-            QLabel#runtimeNotice {{ background: {colors['secondary']}; border: 1px solid {colors['border']}; border-radius: 8px; color: {colors['muted']}; padding: 9px; }}
-            QLabel#eyebrow {{ color: {colors['accent']}; font-size: 10px; font-weight: 700; }}
-            QLabel#sectionTitle {{ color: {colors['text']}; font-size: 20px; font-weight: 700; }}
-            QScrollArea {{ background: transparent; border: none; }}
-            QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
-            QScrollBar::handle:vertical {{ background: {colors['border']}; min-height: 28px; border-radius: 5px; }}
-            QScrollBar::handle:vertical:hover {{ background: {colors['accent']}; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; background: transparent; }}
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-            QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 0; }}
-            QScrollBar::handle:horizontal {{ background: {colors['border']}; min-width: 28px; border-radius: 5px; }}
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; background: transparent; }}
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
-            QStatusBar {{ background: {colors['sidebar']}; color: {colors['muted']}; border-top: 1px solid {colors['border']}; }}
-            """
-        )
-        for key, button in getattr(self, "theme_buttons", {}).items():
-            button.setChecked(key == requested)
+        self._dirty_pages.add(4)
+        self._update_dirty_indicator()
 
     def _setup_tray(self) -> None:
         icon = self.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay)
@@ -1220,6 +1068,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.close()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        if not self._resolve_unsaved_changes():
+            event.ignore()
+            return
         if self._service_test_socket is not None:
             self._finish_service_test(False, "Window closing.")
         if not self.local_models.shutdown():
@@ -1235,13 +1086,24 @@ class MainWindow(QtWidgets.QMainWindow):
         event.accept()
         QtWidgets.QApplication.quit()
 
+    def event(self, event: QtCore.QEvent) -> bool:
+        # QWidget does not forward ApplicationPaletteChange to changeEvent.
+        if (
+            event.type() == QtCore.QEvent.ApplicationPaletteChange
+            and hasattr(self, "config")
+            and not getattr(self, "_palette_syncing", False)
+            and self._theme_mode() == "system"
+        ):
+            # setTheme(AUTO) alone caches the previous OS theme when the mode is unchanged.
+            qconfig.theme = Theme.AUTO
+            setTheme(Theme.AUTO)
+        return super().event(event)
+
     def changeEvent(self, event: QtCore.QEvent) -> None:
-        if event.type() == QtCore.QEvent.ApplicationPaletteChange and self._theme_mode() == "system":
-            self._apply_styles("system")
         if (
             event.type() == QtCore.QEvent.WindowStateChange
             and self.isMinimized()
-            and self.tray
+            and getattr(self, "tray", None)
             and self.tray.isVisible()
         ):
             QtCore.QTimer.singleShot(0, self.hide)
@@ -1282,8 +1144,8 @@ class MainWindow(QtWidgets.QMainWindow):
             status_type = "error"
         self.server_status.setText(text)
         self.server_status.setProperty("status", status_type)
-        self.server_status.style().unpolish(self.server_status)
-        self.server_status.style().polish(self.server_status)
+        self.server_status.setLevel({"running": InfoLevel.SUCCESS, "error": InfoLevel.ERROR}.get(
+            status_type, InfoLevel.INFOAMTION))
         if hasattr(self, "server_status_detail"):
             if text in {"Starting", "Ready", "Stopping", "Stopped"}:
                 detail = {
@@ -1412,7 +1274,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             if not self._validate_server_settings():
                 return
-            if not self._save_config_to_disk():
+            if not self._resolve_unsaved_changes():
                 return
             host = self.host_input.text().strip()
             port = self.port_input.value()
@@ -1580,19 +1442,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         for key, label in MODEL_OPTIONS:
             suffix = "" if key in available else " (download)"
-            self.model_select_combo.addItem(f"{label}{suffix}", key)
+            self.model_select_combo.addItem(f"{label}{suffix}", userData=key)
 
         for name in sorted(available.keys()):
             if name in WHISPER_MODEL_URLS:
                 continue
-            self.model_select_combo.addItem(f"{name} (custom)", name)
+            self.model_select_combo.addItem(f"{name} (custom)", userData=name)
 
         target_index = next(
             (i for i in range(self.model_select_combo.count()) if self.model_select_combo.itemData(i) == current),
             None,
         )
         if target_index is None:
-            self.model_select_combo.addItem(f"{current} (missing)", current)
+            self.model_select_combo.addItem(f"{current} (missing)", userData=current)
             target_index = self.model_select_combo.count() - 1
         self.model_select_combo.setCurrentIndex(target_index)
         self.model_select_combo.blockSignals(False)
@@ -1631,8 +1493,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.config_revision = None
         return config_manager.load_config(self.config_path)
 
-    def _save_config_to_disk(self) -> bool:
-        updated = self._collect_config_from_ui()
+    def _save_config_to_disk(self, *, updated: Dict[str, Any] | None = None, page: int | None = None) -> bool:
+        if updated is None:
+            updated = self._collect_config_from_ui()
         try:
             try:
                 from backend import config_store  # type: ignore
@@ -1653,9 +1516,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._show_notice(f"Could not save settings: {exc}", "error")
             return False
         self.config = updated
-        self._dirty = False
-        if hasattr(self, "dirty_label"):
-            self.dirty_label.setText("All changes saved")
+        if page is None or page == 5:
+            self.service_catalog.mark_saved()
+        if page is None:
+            self._dirty_pages.clear()
+        else:
+            self._dirty_pages.discard(page)
+        self._update_dirty_indicator()
         return True
 
     def _persist_local_config(self, cfg: Dict[str, Any]) -> None:
@@ -1679,23 +1546,77 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_local_model_activated(self, cfg: Dict[str, Any]) -> None:
         self.config = cfg
-        self.service_catalog.load_from_config(cfg)
+        if not self.service_catalog.has_unsaved_changes():
+            self.service_catalog.load_from_config(cfg)
+        self._dirty_pages.discard(1)
+        self._update_dirty_indicator()
         self.status_bar.showMessage("Model available in the extension. Refresh desktop services.")
 
     def _on_local_model_deactivated(self, cfg: Dict[str, Any]) -> None:
         self.config = cfg
-        self.service_catalog.load_from_config(cfg)
+        if not self.service_catalog.has_unsaved_changes():
+            self.service_catalog.load_from_config(cfg)
+        self._dirty_pages.discard(1)
+        self._update_dirty_indicator()
         self.status_bar.showMessage("Model choices updated; refresh desktop services in the extension.")
 
+    # Only fields edited on a page participate in its save or reset.
+    PAGE_FIELDS = {
+        0: {"server": ("host", "port")},
+        1: {"local_llama": ("context", "gpu_layers", "port", "model_id", "target_language"),
+            "translation": ("target_language",)},
+        2: {"stt": ("model", "language", "model_path"), "translation": ("partial",)},
+        3: {"subtitle": ("max_chars", "max_sentences_default", "max_sentences_cjk", "history_lines", "show_partial"),
+            "stt": ("stall_timeout_sec", "stall_check_interval_sec")},
+        4: {"models": ("root",), "stt": ("model_cache_dir",), "local_llama": ("root",), "gui": ("theme",)},
+    }
+
+    def _save_page(self, page: int) -> bool:
+        if page == 5:
+            return self._save_service()
+        collected = self._collect_config_from_ui()
+        updated = copy.deepcopy(self.config)
+        for section, keys in self.PAGE_FIELDS[page].items():
+            target = updated.setdefault(section, {})
+            source = collected.get(section, {})
+            for key in keys:
+                if key in source:
+                    target[key] = copy.deepcopy(source[key])
+                else:
+                    target.pop(key, None)
+        return self._save_config_to_disk(updated=updated, page=page)
+
     def _save_defaults(self) -> None:
-        if self._save_config_to_disk():
-            self.status_bar.showMessage("Defaults saved · new capture defaults are ready", 3000)
+        if self._save_page(self._current_page):
+            self.status_bar.showMessage("Page saved · new capture defaults are ready", 3000)
 
     def _reset_defaults(self) -> None:
-        defaults = config_manager.load_default_config()
-        self.config = defaults
-        self._load_config_into_ui(defaults)
-        self.status_bar.showMessage("Reset to defaults", 2000)
+        page = self._current_page
+        name = self.page_names[page]
+        message = (f"Discard the {name} draft and restore saved services? Saved services will be kept."
+                   if page == 5 else f"Reset {name} fields to defaults? Review them, then Save page to keep them.")
+        answer = QtWidgets.QMessageBox.question(
+            self, f"Reset {name}", message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        if page == 5:
+            self.service_catalog.discard_selected()
+        else:
+            defaults = config_manager.load_default_config()
+            draft = self._collect_config_from_ui()
+            for section, keys in self.PAGE_FIELDS[page].items():
+                for key in keys:
+                    if key in defaults.get(section, {}):
+                        draft.setdefault(section, {})[key] = copy.deepcopy(defaults[section][key])
+                    else:
+                        draft.setdefault(section, {}).pop(key, None)
+            self._load_config_into_ui(draft, page=page)
+            self._dirty_pages.add(page)
+            self._update_dirty_indicator()
+        self.status_bar.showMessage(f"{name} reset", 2000)
 
     def _collect_config_from_ui(self) -> Dict[str, Any]:
         cfg = copy.deepcopy(self.config)
@@ -1750,123 +1671,139 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         return cfg
 
-    def _load_config_into_ui(self, cfg: Dict[str, Any]) -> None:
+    def _load_config_into_ui(self, cfg: Dict[str, Any], *, page: int | None = None) -> None:
         self._loading_ui = True
-        self.config = copy.deepcopy(cfg)
+        if page is None:
+            self.config = copy.deepcopy(cfg)
         self.config.setdefault("gui", {})
         self.settings_location.setText(
             f"Settings file\n{self.config_path}\nWrites use an atomic revision check when the shared backend store is available."
         )
-        theme = self._theme_mode()
-        self._set_theme_mode(theme, persist=False)
-        server_cfg = cfg.get("server", {})
-        self.host_input.setText(str(server_cfg.get("host", "127.0.0.1")))
-        try:
-            self.port_input.setValue(int(server_cfg.get("port", 8765)))
-        except (TypeError, ValueError):
-            self.port_input.setValue(8765)
-
-        stt_cfg = cfg.get("stt", {})
-        model_path = stt_cfg.get("model_path")
-        selected_model = stt_cfg.get("model", "medium")
-        if model_path:
+        if page is None or page == 4:
+            theme = str(cfg.get("gui", {}).get("theme") or "system")
+            self._set_theme_mode(theme, persist=False)
+        if page is None or page == 0:
+            server_cfg = cfg.get("server", {})
+            self.host_input.setText(str(server_cfg.get("host", "127.0.0.1")))
             try:
-                selected_model = Path(model_path).stem
-            except OSError:
-                pass
-        storage_root = self._model_storage_root_from_config(cfg)
-        self.model_cache_input.setText(str(storage_root))
-        self.local_models.set_root(
-            storage_root / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME
-        )
-        self._update_model_storage_paths()
-        self._refresh_model_list(selected_model)
-        model_index = next(
-            (i for i in range(self.model_select_combo.count()) if self.model_select_combo.itemData(i) == selected_model),
-            None,
-        )
-        if model_index is not None:
-            self.model_select_combo.setCurrentIndex(model_index)
+                self.port_input.setValue(int(server_cfg.get("port", 8765)))
+            except (TypeError, ValueError):
+                self.port_input.setValue(8765)
 
-        language = stt_cfg.get("language", "auto")
-        lang_index = self.stt_language_input.findData(language)
-        if lang_index >= 0:
-            self.stt_language_input.setCurrentIndex(lang_index)
-        else:
-            self.stt_language_input.setCurrentText(str(language))
-        translation_cfg = cfg.get("translation", {})
-        if not isinstance(translation_cfg, dict):
-            translation_cfg = {}
-        self.stt_partial_check.setChecked(bool(translation_cfg.get("partial", False)))
-
-        subtitle_cfg = cfg.get("subtitle", {})
-        try:
-            self.subtitle_max_chars_input.setValue(
-                int(subtitle_cfg.get("max_chars", SUBTITLE_MAX_CHARS_DEFAULT))
+        if page is None or page in {2, 4}:
+            stt_cfg = cfg.get("stt", {})
+            model_path = stt_cfg.get("model_path")
+            selected_model = stt_cfg.get("model", "medium")
+            if model_path:
+                try:
+                    selected_model = Path(model_path).stem
+                except OSError:
+                    pass
+            if page == 4:
+                selected_model = self.model_select_combo.currentData()
+        if page is None or page == 4:
+            storage_root = self._model_storage_root_from_config(cfg)
+            self.model_cache_input.setText(str(storage_root))
+            self.local_models.set_root(
+                storage_root / config_manager.LOCAL_TRANSLATION_MODELS_DIR_NAME
             )
-        except (TypeError, ValueError):
-            self.subtitle_max_chars_input.setValue(SUBTITLE_MAX_CHARS_DEFAULT)
-        try:
-            self.subtitle_max_sentences_default_input.setValue(
-                int(
-                    subtitle_cfg.get(
-                        "max_sentences_default", SUBTITLE_MAX_SENTENCES_DEFAULT
+            self._update_model_storage_paths()
+        if page is None or page in {2, 4}:
+            self._refresh_model_list(selected_model)
+            model_index = next(
+                (i for i in range(self.model_select_combo.count()) if self.model_select_combo.itemData(i) == selected_model),
+                None,
+            )
+            if model_index is not None:
+                self.model_select_combo.setCurrentIndex(model_index)
+
+        if page is None or page == 2:
+            language = stt_cfg.get("language", "auto")
+            lang_index = self.stt_language_input.findData(language)
+            if lang_index >= 0:
+                self.stt_language_input.setCurrentIndex(lang_index)
+            else:
+                self.stt_language_input.setCurrentText(str(language))
+            translation_cfg = cfg.get("translation", {})
+            if not isinstance(translation_cfg, dict):
+                translation_cfg = {}
+            self.stt_partial_check.setChecked(bool(translation_cfg.get("partial", False)))
+
+        if page is None or page == 3:
+            stt_cfg = cfg.get("stt", {})
+            subtitle_cfg = cfg.get("subtitle", {})
+            try:
+                self.subtitle_max_chars_input.setValue(
+                    int(subtitle_cfg.get("max_chars", SUBTITLE_MAX_CHARS_DEFAULT))
+                )
+            except (TypeError, ValueError):
+                self.subtitle_max_chars_input.setValue(SUBTITLE_MAX_CHARS_DEFAULT)
+            try:
+                self.subtitle_max_sentences_default_input.setValue(
+                    int(
+                        subtitle_cfg.get(
+                            "max_sentences_default", SUBTITLE_MAX_SENTENCES_DEFAULT
+                        )
                     )
                 )
-            )
-        except (TypeError, ValueError):
-            self.subtitle_max_sentences_default_input.setValue(
-                SUBTITLE_MAX_SENTENCES_DEFAULT
-            )
-        try:
-            self.subtitle_max_sentences_cjk_input.setValue(
-                int(
-                    subtitle_cfg.get(
-                        "max_sentences_cjk", SUBTITLE_MAX_SENTENCES_CJK
+            except (TypeError, ValueError):
+                self.subtitle_max_sentences_default_input.setValue(
+                    SUBTITLE_MAX_SENTENCES_DEFAULT
+                )
+            try:
+                self.subtitle_max_sentences_cjk_input.setValue(
+                    int(
+                        subtitle_cfg.get(
+                            "max_sentences_cjk", SUBTITLE_MAX_SENTENCES_CJK
+                        )
                     )
                 )
+            except (TypeError, ValueError):
+                self.subtitle_max_sentences_cjk_input.setValue(
+                    SUBTITLE_MAX_SENTENCES_CJK
+                )
+            try:
+                self.subtitle_history_lines_input.setValue(
+                    int(subtitle_cfg.get("history_lines", SUBTITLE_HISTORY_LINES_DEFAULT))
+                )
+            except (TypeError, ValueError):
+                self.subtitle_history_lines_input.setValue(SUBTITLE_HISTORY_LINES_DEFAULT)
+            self.subtitle_show_partial_check.setChecked(
+                bool(subtitle_cfg.get("show_partial", SUBTITLE_SHOW_PARTIAL_DEFAULT))
             )
-        except (TypeError, ValueError):
-            self.subtitle_max_sentences_cjk_input.setValue(
-                SUBTITLE_MAX_SENTENCES_CJK
-            )
-        try:
-            self.subtitle_history_lines_input.setValue(
-                int(subtitle_cfg.get("history_lines", SUBTITLE_HISTORY_LINES_DEFAULT))
-            )
-        except (TypeError, ValueError):
-            self.subtitle_history_lines_input.setValue(SUBTITLE_HISTORY_LINES_DEFAULT)
-        self.subtitle_show_partial_check.setChecked(
-            bool(subtitle_cfg.get("show_partial", SUBTITLE_SHOW_PARTIAL_DEFAULT))
-        )
 
-        try:
-            self.stall_timeout_input.setValue(
-                int(stt_cfg.get("stall_timeout_sec", STALL_TIMEOUT_DEFAULT))
-            )
-        except (TypeError, ValueError):
-            self.stall_timeout_input.setValue(STALL_TIMEOUT_DEFAULT)
-        try:
-            self.stall_check_interval_input.setValue(
-                int(
-                    stt_cfg.get(
-                        "stall_check_interval_sec", STALL_CHECK_INTERVAL_DEFAULT
+            try:
+                self.stall_timeout_input.setValue(
+                    int(stt_cfg.get("stall_timeout_sec", STALL_TIMEOUT_DEFAULT))
+                )
+            except (TypeError, ValueError):
+                self.stall_timeout_input.setValue(STALL_TIMEOUT_DEFAULT)
+            try:
+                self.stall_check_interval_input.setValue(
+                    int(
+                        stt_cfg.get(
+                            "stall_check_interval_sec", STALL_CHECK_INTERVAL_DEFAULT
+                        )
                     )
                 )
-            )
-        except (TypeError, ValueError):
-            self.stall_check_interval_input.setValue(STALL_CHECK_INTERVAL_DEFAULT)
+            except (TypeError, ValueError):
+                self.stall_check_interval_input.setValue(STALL_CHECK_INTERVAL_DEFAULT)
 
-        self.service_catalog.load_from_config(cfg)
-        self.local_models.load_config(cfg)
+        if page is None or page == 5:
+            self.service_catalog.load_from_config(cfg)
+        if page is None or page == 1:
+            self.local_models.load_config(cfg)
         self._update_ws_url()
         self._loading_ui = False
-        self._dirty = False
-        if hasattr(self, "dirty_label"):
-            self.dirty_label.setText("All changes saved")
+        if page is None:
+            self._dirty_pages.clear()
+        self._update_dirty_indicator()
 
 
 def main() -> None:
+    # Qt 6 enables high-DPI scaling by default; preserve fractional desktop scaling.
+    QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QtWidgets.QApplication(sys.argv)
     window = MainWindow()
     window.show()

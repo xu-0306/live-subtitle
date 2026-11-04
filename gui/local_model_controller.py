@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
+from qfluentwidgets import BodyLabel, FluentStyleSheet, LineEdit, PrimaryPushButton, PushButton
 
 from backend.local_catalog import (
     MODELS,
@@ -27,6 +28,7 @@ from backend.local_runtime import (
 )
 from gui import config_manager
 from gui._local_model_form import build_form
+from gui.fluent_kit import muted_label
 
 
 def activate_config(config: dict, model_id: str, settings: dict, result: dict, target: str) -> dict:
@@ -413,7 +415,7 @@ class LocalModelController(QtCore.QObject):
         combo.blockSignals(True)
         combo.clear()
         for model in list_models(self.get_config()):
-            combo.addItem(model.name, model.id)
+            combo.addItem(model.name, userData=model.id)
         combo.setCurrentIndex(max(0, combo.findData(selected)))
         combo.blockSignals(False)
         self._details()
@@ -422,20 +424,28 @@ class LocalModelController(QtCore.QObject):
         if self.busy or self.catalog_worker:
             return
         dialog = QtWidgets.QDialog(self.controls['model'].window())
+        FluentStyleSheet.DIALOG.apply(dialog)
         dialog.setWindowTitle('Add public Hugging Face GGUF')
+        dialog.setMinimumWidth(480)
         form = QtWidgets.QFormLayout(dialog)
-        repo, filename = QtWidgets.QLineEdit(), QtWidgets.QLineEdit()
+        form.setContentsMargins(24, 20, 24, 20)
+        form.setVerticalSpacing(10)
+        repo, filename = LineEdit(), LineEdit()
         repo.setPlaceholderText('owner/repository')
         filename.setPlaceholderText('model-Q4_K_M.gguf (or first shard path)')
-        form.addRow('Repository', repo)
-        form.addRow('GGUF file', filename)
-        notice = QtWidgets.QLabel('Public GGUF weights only. The model must support a standard chat template. '
-                                 'A pinned revision and SHA256 will be saved; no repository code runs.')
-        notice.setWordWrap(True)
+        form.addRow(BodyLabel('Repository'), repo)
+        form.addRow(BodyLabel('GGUF file'), filename)
+        notice = muted_label('Public GGUF weights only. The model must support a standard chat template. '
+                             'A pinned revision and SHA256 will be saved; no repository code runs.', small=True)
         form.addRow(notice)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
+        ok, cancel = PrimaryPushButton('OK'), PushButton('Cancel')
+        ok.setDefault(True)
+        ok.clicked.connect(dialog.accept)
+        cancel.clicked.connect(dialog.reject)
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        buttons.addWidget(ok)
         form.addRow(buttons)
         if dialog.exec() != QtWidgets.QDialog.Accepted:
             return

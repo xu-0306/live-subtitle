@@ -51,6 +51,7 @@ def _profile_translation_config(base: dict, profile: dict) -> dict:
     if engine == "ollama":
         nested = options.get("ollama") if isinstance(options.get("ollama"), dict) else {}
         result["ollama"] = {
+            **copy.deepcopy(base.get("ollama") or {}),
             **copy.deepcopy(nested),
             "model": str(profile.get("model") or nested.get("model") or ""),
             "host": str(profile.get("base_url") or nested.get("host") or ""),

@@ -190,6 +190,8 @@ def test_websocket_catalog_and_api_test_never_initialize_stt(tmp_path, monkeypat
     monkeypatch.setattr(server, 'TranscriptionEngine', forbidden)
     seen = []
     async def handler(req):
+        if req.method == 'GET':
+            return httpx.Response(200, json={'data': [{'id': 'test-model'}]})
         seen.append(json.loads(req.content))
         return httpx.Response(200, json={'choices': [{'message': {'content': 'Hola'}}]})
     with TestClient(server.app, client=('127.0.0.1', 55001)) as client:

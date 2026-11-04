@@ -378,11 +378,11 @@ def _profile_id(value: Any, fallback: str) -> str:
 def _endpoint_from_profile(profile: Mapping[str, Any], engine: str) -> str:
     if engine == "ollama":
         nested = profile.get("ollama")
-        if isinstance(nested, Mapping):
-            return _as_text(
-                nested.get("host") or nested.get("base_url") or nested.get("endpoint")
-            )
-        return _as_text(profile.get("host") or profile.get("base_url") or profile.get("endpoint"))
+        nested = nested if isinstance(nested, Mapping) else {}
+        return _as_text(
+            profile.get("base_url") or profile.get("endpoint") or profile.get("host")
+            or nested.get("base_url") or nested.get("endpoint") or nested.get("host")
+        )
     nested = profile.get(engine)
     if isinstance(nested, Mapping):
         return _as_text(
@@ -440,6 +440,8 @@ def normalize_service_profile(
     endpoint = _endpoint_from_profile(profile, engine)
     normalized["base_url"] = endpoint
     normalized["endpoint"] = endpoint
+    if engine == "ollama":
+        normalized.pop("host", None)
     connection = profile.get("connection")
     connection_map = connection if isinstance(connection, Mapping) else {}
     normalized["api_type"] = _as_text(

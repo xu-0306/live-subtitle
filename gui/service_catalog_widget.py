@@ -14,6 +14,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
+from qfluentwidgets import (
+    BodyLabel, CheckBox, ComboBox, FluentIcon, LineEdit, ListWidget,
+    PrimaryPushButton, PushButton, StrongBodyLabel, TogglePushButton,
+)
+
+from gui.fluent_kit import FreeTextComboBox, disclosure_button, make_card, muted_label
 
 
 PROFILE_KINDS = (
@@ -161,11 +167,14 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
     changed = QtCore.Signal()
     notice = QtCore.Signal(str)
     test_requested = QtCore.Signal(object)
+    save_requested = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self._profiles: list[dict[str, Any]] = []
         self._active_index = -1
+        self._draft: dict[str, Any] | None = None
+        self._saved_profiles: list[dict[str, Any]] = []
         self._loading = False
         self._test_busy = False
         self._selection_state: dict[str, str] | None = None
@@ -176,125 +185,127 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
+        root.setSpacing(14)
 
-        header = QtWidgets.QFrame()
-        header.setObjectName("pageHeaderCard")
-        header_layout = QtWidgets.QVBoxLayout(header)
-        title = QtWidgets.QLabel("Service connections")
-        title.setObjectName("cardTitle")
-        subtitle = QtWidgets.QLabel(
-            "Add an API or Ollama connection, then select it in the extension."
-        )
-        subtitle.setObjectName("mutedText")
-        subtitle.setWordWrap(True)
-        header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
-        root.addWidget(header)
-
-        toolbar = QtWidgets.QHBoxLayout()
-        self.catalog_status = QtWidgets.QLabel("Saved services")
-        self.catalog_status.setObjectName("statusBadge")
-        toolbar.addWidget(self.catalog_status)
-        toolbar.addStretch(1)
-        self.new_btn = QtWidgets.QPushButton("Add service")
-        self.duplicate_btn = QtWidgets.QPushButton("Duplicate")
-        self.remove_btn = QtWidgets.QPushButton("Remove")
+        # Wrapped help text must sit in a plain vertical layout; box layouts
+        # size it by height-for-width, form/horizontal rows do not.
+        title_row = QtWidgets.QHBoxLayout()
+        title_row.addWidget(StrongBodyLabel("Service connections"), 1)
+        self.new_btn = PushButton(FluentIcon.ADD, "Add service")
+        self.new_btn.setProperty("kind", "secondary")
+        self.duplicate_btn = PushButton(FluentIcon.COPY, "Duplicate")
+        self.duplicate_btn.setProperty("kind", "secondary")
+        self.remove_btn = PushButton(FluentIcon.DELETE, "Remove")
         self.remove_btn.setProperty("kind", "danger")
-        toolbar.addWidget(self.new_btn)
-        toolbar.addWidget(self.duplicate_btn)
-        toolbar.addWidget(self.remove_btn)
-        root.addLayout(toolbar)
+        for button in (self.new_btn, self.duplicate_btn, self.remove_btn):
+            title_row.addWidget(button)
+        root.addLayout(title_row)
+        root.addWidget(
+            muted_label("Add an API or Ollama connection, then select it in the extension.")
+        )
 
         self._body_layout = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.LeftToRight)
-        self._body_layout.setSpacing(12)
-        list_card = QtWidgets.QFrame()
-        list_card.setObjectName("card")
-        list_layout = QtWidgets.QVBoxLayout(list_card)
-        list_title = QtWidgets.QLabel("Saved services")
-        list_title.setObjectName("cardTitleSmall")
-        list_layout.addWidget(list_title)
-        self.profile_list = QtWidgets.QListWidget()
+        self._body_layout.setSpacing(14)
+        list_card = make_card("Saved services")
+        self.profile_list = ListWidget()
         self.profile_list.setObjectName("serviceList")
         self.profile_list.setMinimumWidth(0)
+        self.profile_list.setMinimumHeight(180)
         self.profile_list.setWordWrap(True)
-        list_layout.addWidget(self.profile_list, 1)
+        list_card.layout().addWidget(self.profile_list, 1)
         self._body_layout.addWidget(list_card, 1)
 
-        editor_card = QtWidgets.QFrame()
-        editor_card.setObjectName("card")
-        form = QtWidgets.QFormLayout(editor_card)
+        editor_card = make_card("Connection details")
+        form = QtWidgets.QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
+        form.setLabelAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
-        self.kind_combo = QtWidgets.QComboBox()
+        editor_card.layout().addLayout(form)
+        self.kind_combo = ComboBox()
         for value, label in PROFILE_KINDS:
-            self.kind_combo.addItem(label, value)
-        self.name_input = QtWidgets.QLineEdit()
+            self.kind_combo.addItem(label, userData=value)
+        self.name_input = LineEdit()
         self.name_input.setPlaceholderText("Friendly name")
-        self.endpoint_input = QtWidgets.QLineEdit()
+        self.endpoint_input = LineEdit()
         self.endpoint_input.setPlaceholderText("https://provider.example/v1")
-        self.model_input = QtWidgets.QLineEdit()
+        self.model_input = LineEdit()
         self.model_input.setPlaceholderText("Model ID or served model")
-        self.api_type_label = QtWidgets.QLabel("API type")
-        self.api_type_combo = QtWidgets.QComboBox()
-        self.api_type_combo.setEditable(True)
+        self.api_type_label = BodyLabel("API type")
+        self.api_type_combo = FreeTextComboBox()
         for value, label in (
             ("chat_completions", "Chat Completions"),
             ("responses", "Responses"),
             ("messages", "Messages"),
         ):
-            self.api_type_combo.addItem(label, value)
-        self.auto_complete_check = QtWidgets.QCheckBox("Complete provider URL automatically")
+            self.api_type_combo.addItem(label, userData=value)
+        self.auto_complete_check = CheckBox("Complete provider URL automatically")
         self.auto_complete_check.setToolTip(
             "Keep this enabled when the provider uses the standard API path."
         )
-        self.api_key_input = QtWidgets.QLineEdit()
+        self.api_key_input = LineEdit()
         self.api_key_input.setEchoMode(QtWidgets.QLineEdit.Password)
         self.api_key_input.setPlaceholderText("Optional; stored in user config")
-        self.show_key_btn = QtWidgets.QToolButton()
-        self.show_key_btn.setText("Show")
-        self.show_key_btn.setCheckable(True)
+        # Fluent's PasswordLineEdit only reveals while its eye button is held;
+        # keep the persistent Show/Hide toggle this editor always had.
+        self.show_key_btn = TogglePushButton("Show")
         key_row = QtWidgets.QWidget()
         key_layout = QtWidgets.QHBoxLayout(key_row)
         key_layout.setContentsMargins(0, 0, 0, 0)
         key_layout.addWidget(self.api_key_input, 1)
         key_layout.addWidget(self.show_key_btn)
-        self.availability_label = QtWidgets.QLabel("Configured")
+        self.availability_label = BodyLabel("Configured")
         self.availability_label.setObjectName("statusBadge")
-        self.default_check = QtWidgets.QCheckBox("Use as desktop default for the next capture")
+        self.default_check = CheckBox("Use as desktop default for the next capture")
         self.default_check.setToolTip(
             "This changes the saved preference only. It does not claim an active service."
         )
-        self.test_btn = QtWidgets.QPushButton("Test connection")
+        self.test_btn = PushButton(FluentIcon.SEND, "Test connection")
         self.test_btn.setProperty("kind", "secondary")
-        self.advanced_toggle = QtWidgets.QToolButton()
-        self.advanced_toggle.setText("Advanced profile metadata")
-        self.advanced_toggle.setCheckable(True)
-        self.advanced_toggle.setChecked(False)
+        self.editor_status = muted_label("Saved", small=True)
+        self.save_btn = PrimaryPushButton(FluentIcon.SAVE, "Save")
+        self.discard_btn = PushButton("Discard")
+        self.discard_btn.setProperty("kind", "secondary")
+        actions = QtWidgets.QWidget()
+        action_layout = QtWidgets.QHBoxLayout(actions)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.addWidget(self.save_btn)
+        action_layout.addWidget(self.discard_btn)
+        action_layout.addWidget(self.test_btn)
+        action_layout.addWidget(self.editor_status, 1)
         self.advanced = QtWidgets.QWidget()
         advanced_form = QtWidgets.QFormLayout(self.advanced)
-        self.source_input = QtWidgets.QLineEdit()
+        advanced_form.setContentsMargins(0, 0, 0, 0)
+        advanced_form.setHorizontalSpacing(14)
+        advanced_form.setVerticalSpacing(10)
+        self.source_input = LineEdit()
         self.source_input.setReadOnly(True)
         self.source_input.setPlaceholderText("Imported from shared catalogue")
-        self.id_input = QtWidgets.QLineEdit()
+        self.id_input = LineEdit()
         self.id_input.setReadOnly(True)
-        advanced_form.addRow("Stable ID", self.id_input)
-        advanced_form.addRow("Source", self.source_input)
-        self.advanced.setVisible(False)
+        advanced_form.addRow(BodyLabel("Stable ID"), self.id_input)
+        advanced_form.addRow(BodyLabel("Source"), self.source_input)
+        # Starts collapsed; the button shows/hides ``self.advanced``.
+        self.advanced_toggle = disclosure_button("Advanced profile metadata", self.advanced)
 
-        form.addRow("Type", self.kind_combo)
-        form.addRow("Name", self.name_input)
-        form.addRow("Endpoint / host", self.endpoint_input)
-        form.addRow("Model", self.model_input)
+        form.addRow(BodyLabel("Type"), self.kind_combo)
+        form.addRow(BodyLabel("Name"), self.name_input)
+        form.addRow(BodyLabel("Endpoint / host"), self.endpoint_input)
+        form.addRow(BodyLabel("Model"), self.model_input)
         form.addRow(self.api_type_label, self.api_type_combo)
         form.addRow("", self.auto_complete_check)
-        form.addRow("API key", key_row)
-        form.addRow("Availability", self.availability_label)
+        form.addRow(BodyLabel("API key"), key_row)
+        form.addRow(BodyLabel("Availability"), self.availability_label)
         form.addRow("", self.default_check)
-        form.addRow("", self.test_btn)
-        form.addRow("", self.advanced_toggle)
+        form.addRow("", actions)
+        toggle_row = QtWidgets.QHBoxLayout()
+        toggle_row.addWidget(self.advanced_toggle)
+        toggle_row.addStretch(1)
+        form.addRow("", toggle_row)
         form.addRow("", self.advanced)
         self._body_layout.addWidget(editor_card, 2)
-        root.addLayout(self._body_layout, 1)
+        root.addLayout(self._body_layout)
+        root.addStretch(1)
         self._list_card = list_card
         self._editor_card = editor_card
         self._narrow_catalog = False
@@ -305,10 +316,10 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         self.duplicate_btn.clicked.connect(self._duplicate_profile)
         self.remove_btn.clicked.connect(self._remove_profile)
         self.test_btn.clicked.connect(self._test_profile)
+        self.save_btn.clicked.connect(self.save_selected)
+        self.discard_btn.clicked.connect(self.discard_selected)
         self.show_key_btn.toggled.connect(self._toggle_key)
-        self.advanced_toggle.toggled.connect(self.advanced.setVisible)
-        self.kind_combo.currentIndexChanged.connect(self._editor_changed)
-        self.kind_combo.currentIndexChanged.connect(self._update_kind_fields)
+        self.kind_combo.currentIndexChanged.connect(self._kind_changed)
         self.name_input.textChanged.connect(self._editor_changed)
         self.endpoint_input.textChanged.connect(self._editor_changed)
         self.model_input.textChanged.connect(self._editor_changed)
@@ -316,7 +327,6 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         self.auto_complete_check.toggled.connect(self._editor_changed)
         self.api_key_input.textChanged.connect(self._editor_changed)
         self.default_check.toggled.connect(self._editor_changed)
-        self.default_check.toggled.connect(self._default_toggled)
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         """Stack the catalogue editor when the 900x640 window is narrow."""
@@ -336,6 +346,8 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         super().resizeEvent(event)
 
     def load_from_config(self, config: Mapping[str, Any]) -> None:
+        self._active_index = -1
+        self._draft = None
         self._profiles = profiles_from_config(config)
         translation = config.get("translation")
         translation_map = translation if isinstance(translation, Mapping) else {}
@@ -375,18 +387,27 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
             default_id = self._selection_state.get("id", "")
         for profile in self._profiles:
             profile["_default"] = profile["id"] == default_id
-        self._refresh_list()
+        self._saved_profiles = copy.deepcopy(self._profiles)
         index = next((i for i, p in enumerate(self._profiles) if p["id"] == default_id), 0)
-        self.profile_list.setCurrentRow(index)
+        self._active_index = index if self._profiles else -1
+        self._draft = copy.deepcopy(self._profiles[index]) if self._profiles else None
+        self._refresh_list()
+        self._load_editor()
         self._set_editor_enabled(bool(self._profiles))
 
     def collect_into_config(self, config: Mapping[str, Any]) -> dict[str, Any]:
         self._store_editor()
+        profiles = self._draft_profiles()
+        selection_touched = self._selection_touched or any(
+            p.get("_default") for p in profiles if p not in self._saved_profiles
+        ) or any(p.get("_default") for p in self._saved_profiles if p not in profiles)
         updated = copy.deepcopy(dict(config))
         translation = updated.get("translation")
         translation_map = dict(translation) if isinstance(translation, Mapping) else {}
+        original_profiles = translation_map.get("service_profiles", translation_map.get("profiles", []))
+        originals = {str(p.get("id")): p for p in original_profiles if isinstance(p, Mapping)} if isinstance(original_profiles, list) else {}
         clean_profiles = []
-        for profile in self._profiles:
+        for profile in profiles:
             clean = {k: copy.deepcopy(v) for k, v in profile.items() if not k.startswith("_")}
             kind = str(clean.get("kind") or "api")
             engine = {
@@ -396,17 +417,23 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
             }.get(kind, kind)
             clean["engine"] = engine
             clean["endpoint"] = clean.get("base_url", "")
+            if engine == "ollama":
+                clean.pop("host", None)
+            original = originals.get(profile["id"])
+            if (profile in self._saved_profiles and original is not None
+                    and "vllm" not in {original.get("kind"), original.get("engine")}):
+                clean = copy.deepcopy(dict(original))
             clean_profiles.append(clean)
         translation_map["service_profiles"] = copy.deepcopy(clean_profiles)
         translation_map["profiles"] = clean_profiles
-        default = next((p["id"] for p in self._profiles if p.get("_default")), "")
+        default = next((p["id"] for p in profiles if p.get("_default")), "")
         if default:
-            if self._selection_touched or str(translation_map.get("engine") or "").lower() == "vllm":
+            if selection_touched or str(translation_map.get("engine") or "").lower() == "vllm":
                 translation_map["default_selection"] = {"kind": "profile", "id": default}
                 translation_map.pop("selection", None)
             # Remove the GUI-only legacy key after the first canonical save.
             translation_map.pop("default_profile_id", None)
-        elif self._selection_touched:
+        elif selection_touched:
             # Keep an explicit None selection so a previously selected service
             # is cleared instead of being re-inferred by the backend.
             translation_map["default_selection"] = {"kind": "none", "id": "none"}
@@ -424,7 +451,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         # Keep legacy adapters in sync for old extension/backend versions while
         # the canonical profile list is being adopted.
         for kind, section_name in (("ollama", "ollama"), ("nllb", "nllb"), ("api", "openai")):
-            selected = next((p for p in self._profiles if p.get("kind") == kind), None)
+            selected = next((p for p in profiles if p.get("kind") == kind), None)
             if selected:
                 legacy = dict(translation_map.get(section_name) or {})
                 legacy.update(
@@ -442,6 +469,57 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
                 translation_map[section_name] = legacy
         updated["translation"] = translation_map
         return updated
+
+    def _draft_profiles(self) -> list[dict[str, Any]]:
+        profiles = copy.deepcopy(self._profiles)
+        if self._draft is not None and 0 <= self._active_index < len(profiles):
+            profiles[self._active_index] = copy.deepcopy(self._draft)
+            if self._draft.get("_default"):
+                for index, profile in enumerate(profiles):
+                    if index != self._active_index:
+                        profile["_default"] = False
+        return profiles
+
+    def has_unsaved_changes(self) -> bool:
+        return self._draft_profiles() != self._saved_profiles
+
+    def save_selected(self) -> bool:
+        if self.has_unsaved_changes():
+            self.save_requested.emit()
+        return not self.has_unsaved_changes()
+
+    def mark_saved(self) -> None:
+        self._selection_touched = self._selection_touched or any(
+            p.get("_default") for p in self._draft_profiles() if p not in self._saved_profiles
+        ) or any(p.get("_default") for p in self._saved_profiles if p not in self._draft_profiles())
+        self._profiles = self._draft_profiles()
+        self._saved_profiles = copy.deepcopy(self._profiles)
+        self._refresh_list()
+        self.editor_status.setText("Saved")
+        self.changed.emit()
+
+    def discard_selected(self) -> None:
+        self._profiles = copy.deepcopy(self._saved_profiles)
+        self._active_index = min(self._active_index, len(self._profiles) - 1)
+        self._draft = copy.deepcopy(self._profiles[self._active_index]) if self._active_index >= 0 else None
+        self._refresh_list()
+        self._load_editor()
+        self.changed.emit()
+
+    def _guard_draft(self) -> bool:
+        if not self.has_unsaved_changes():
+            return True
+        answer = QtWidgets.QMessageBox.question(
+            self, "Unsaved service", "Save changes to this service before continuing?",
+            QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel,
+        )
+        if answer == QtWidgets.QMessageBox.Save:
+            return self.save_selected()
+        if answer == QtWidgets.QMessageBox.Discard:
+            self.discard_selected()
+            return True
+        return False
 
     def _set_editor_enabled(self, enabled: bool) -> None:
         for widget in (
@@ -467,29 +545,46 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         row = self._active_index if self._active_index >= 0 else self.profile_list.currentRow()
         self.profile_list.blockSignals(True)
         self.profile_list.clear()
-        for profile in self._profiles:
+        for index, profile in enumerate(self._profiles):
             state = self._profile_state(profile)
             item = QtWidgets.QListWidgetItem(f"{profile['name']}\n{profile['kind'].upper()} · {state}")
+            if index == self._active_index and self.has_unsaved_changes():
+                item.setText(item.text() + " · Unsaved")
             item.setData(QtCore.Qt.UserRole, profile["id"])
             self.profile_list.addItem(item)
-        self.profile_list.blockSignals(False)
         if self._profiles:
             self.profile_list.setCurrentRow(max(0, min(row, len(self._profiles) - 1)))
+        self.profile_list.blockSignals(False)
         self.remove_btn.setEnabled(bool(self._profiles))
         self.duplicate_btn.setEnabled(bool(self._profiles))
+        dirty = self.has_unsaved_changes()
+        self.editor_status.setText("Unsaved changes" if dirty else "Saved")
+        self.save_btn.setEnabled(dirty)
+        self.discard_btn.setEnabled(dirty)
 
     def _select_profile(self, index: int) -> None:
         if self._loading:
             return
-        self._store_editor()
+        if index == self._active_index:
+            return
+        if not self._guard_draft():
+            self.profile_list.blockSignals(True)
+            self.profile_list.setCurrentRow(self._active_index)
+            self.profile_list.blockSignals(False)
+            return
         self._active_index = index
+        self._draft = copy.deepcopy(self._profiles[index]) if 0 <= index < len(self._profiles) else None
+        self._refresh_list()
         self._load_editor()
 
     def _load_editor(self) -> None:
-        profile = self._profiles[self._active_index] if 0 <= self._active_index < len(self._profiles) else None
+        profile = self._draft
         self._loading = True
         try:
             if profile is None:
+                for field in (self.name_input, self.endpoint_input, self.model_input,
+                              self.api_key_input, self.id_input, self.source_input):
+                    field.clear()
                 self._set_editor_enabled(False)
                 return
             self._set_editor_enabled(True)
@@ -502,7 +597,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
             api_type = str(profile.get("api_type") or "chat_completions")
             api_index = self.api_type_combo.findData(api_type)
             if api_index < 0:
-                self.api_type_combo.addItem(f"{api_type} (custom)", api_type)
+                self.api_type_combo.addItem(f"{api_type} (custom)", userData=api_type)
                 api_index = self.api_type_combo.count() - 1
             self.api_type_combo.setCurrentIndex(api_index)
             self.auto_complete_check.setChecked(bool(profile.get("auto_complete_endpoint", True)))
@@ -517,7 +612,9 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
     def _store_editor(self) -> None:
         if self._loading or not (0 <= self._active_index < len(self._profiles)):
             return
-        profile = self._profiles[self._active_index]
+        profile = self._draft
+        if profile is None:
+            return
         api_type_text = self.api_type_combo.currentText().strip()
         api_type_index = self.api_type_combo.currentIndex()
         api_type_data = (
@@ -548,24 +645,41 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
                 "_default": self.default_check.isChecked(),
             }
         )
-        if profile["_default"]:
-            for index, other in enumerate(self._profiles):
-                if index != self._active_index:
-                    other["_default"] = False
 
     def _editor_changed(self, *_args: object) -> None:
         if self._loading:
             return
         self._store_editor()
-        row = self.profile_list.currentRow()
-        if 0 <= row < self.profile_list.count():
-            profile = self._profiles[row]
-            state = self._profile_state(profile)
-            self.profile_list.item(row).setText(f"{profile['name']}\n{profile['kind'].upper()} · {state}")
+        self._refresh_list()
         self.changed.emit()
 
+    def _kind_changed(self) -> None:
+        if self._loading or self._draft is None:
+            return
+        kind = self.kind_combo.currentData() or "api"
+        if kind == self._draft.get("kind"):
+            return
+        if self._profiles[self._active_index]["id"] in {p["id"] for p in self._saved_profiles}:
+            answer = QtWidgets.QMessageBox.question(
+                self, "Change service type",
+                "Changing Type creates a new service ID and clears connection fields. Continue?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+                QtWidgets.QMessageBox.Cancel,
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                self._load_editor()
+                return
+        self._draft = _as_profile({
+            "id": f"service-{uuid.uuid4().hex[:8]}",
+            "name": self._draft["name"], "kind": kind,
+            "_default": self._draft.get("_default", False),
+        }, self._active_index)
+        self._load_editor()
+        self._editor_changed()
+
     def _new_profile(self) -> None:
-        self._store_editor()
+        if not self._guard_draft():
+            return
         profile = _as_profile(
             {
                 "id": f"service-{uuid.uuid4().hex[:8]}",
@@ -578,6 +692,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         profile["_default"] = False
         self._profiles.append(profile)
         self._active_index = len(self._profiles) - 1
+        self._draft = copy.deepcopy(profile)
         self._refresh_list()
         self.profile_list.setCurrentRow(self._active_index)
         self._load_editor()
@@ -586,13 +701,15 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
     def _duplicate_profile(self) -> None:
         if not (0 <= self._active_index < len(self._profiles)):
             return
-        self._store_editor()
+        if not self._guard_draft():
+            return
         profile = copy.deepcopy(self._profiles[self._active_index])
         profile["id"] = f"service-{uuid.uuid4().hex[:8]}"
         profile["name"] = f"{profile.get('name') or 'Translation service'} copy"
         profile["_default"] = False
         self._profiles.append(profile)
         self._active_index = len(self._profiles) - 1
+        self._draft = copy.deepcopy(profile)
         self._refresh_list()
         self.profile_list.setCurrentRow(self._active_index)
         self._load_editor()
@@ -601,6 +718,8 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
     def _remove_profile(self) -> None:
         if not (0 <= self._active_index < len(self._profiles)):
             return
+        if self._draft != self._profiles[self._active_index] and not self._guard_draft():
+            return
         removed = self._profiles.pop(self._active_index)
         if removed.get("_default"):
             self._selection_touched = True
@@ -608,12 +727,13 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
             for profile in self._profiles:
                 profile["_default"] = False
         self._active_index = min(self._active_index, len(self._profiles) - 1)
+        self._draft = copy.deepcopy(self._profiles[self._active_index]) if self._active_index >= 0 else None
         self._refresh_list()
         self._load_editor()
         self.changed.emit()
 
     def _test_profile(self) -> None:
-        profile = self._profiles[self._active_index] if 0 <= self._active_index < len(self._profiles) else None
+        profile = self._draft
         if profile is None:
             self.notice.emit("Select a saved service before testing it.")
             return
@@ -623,18 +743,6 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
             self.notice.emit("Save this service with a stable ID before testing it.")
             return
         self.test_requested.emit(copy.deepcopy(profile))
-
-    def _default_toggled(self, checked: bool) -> None:
-        if self._loading:
-            return
-        self._selection_touched = True
-        if checked:
-            self._selection_state = {
-                "kind": "profile",
-                "id": str(self._profiles[self._active_index].get("id") or ""),
-            }
-        else:
-            self._selection_state = {"kind": "none", "id": "none"}
 
     def _toggle_key(self, visible: bool) -> None:
         self.api_key_input.setEchoMode(QtWidgets.QLineEdit.Normal if visible else QtWidgets.QLineEdit.Password)

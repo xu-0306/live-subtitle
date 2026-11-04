@@ -3,15 +3,23 @@ from __future__ import annotations
 import json
 import os
 import copy
+import pytest
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtCore, QtGui, QtWidgets
+from qfluentwidgets import TitleLabel
 
 from gui import config_manager
 from gui.app import MainWindow
 from backend import config as backend_config, config_store
+
+
+@pytest.fixture(autouse=True)
+def _answer_settings_prompts(monkeypatch):
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda _parent, title, *_args:
+                        QtWidgets.QMessageBox.Yes if title.startswith("Change service") else QtWidgets.QMessageBox.Discard)
 
 
 def _app() -> QtWidgets.QApplication:
@@ -78,17 +86,17 @@ def test_sidebar_stack_keeps_existing_page_contract_and_scrolls(tmp_path: Path) 
         "Settings",
         "Translation services",
     ]
-    assert len(window.nav_buttons) == 6
+    assert len(window.NAV_ITEMS) == window.stackedWidget.count() == 6
     assert window.windowTitle() == "Live Subtitle"
     assert any(
         label.text() == "Live Subtitle"
         for label in window.findChildren(QtWidgets.QLabel)
     )
-    assert window.tabs.findChildren(QtWidgets.QScrollArea)
+    assert window.stackedWidget.findChildren(QtWidgets.QScrollArea)
     assert window.minimumWidth() == 900
-    window.nav_buttons[4].click()
+    window.navigationInterface.widget("services").click()
     assert window.tabs.currentIndex() == 5
-    assert window.page_title.text() == "Translation services"
+    assert window.pages[5].findChild(TitleLabel).text() == "Translation services"
     window.close()
 
 
@@ -210,17 +218,19 @@ def test_translation_pages_explain_runtime_vs_service_profiles(tmp_path: Path) -
     assert window.local_models.controls["technical"].isHidden()
     subtitles = window.service_catalog.findChildren(QtWidgets.QLabel, "mutedText")
     assert any("select it in the extension" in label.text() for label in subtitles)
-    assert window.service_catalog.catalog_status.text() == "Saved services"
+    assert window.service_catalog.editor_status.text() == "Saved"
     window.close()
 
 
-def test_stt_selection_publishes_without_saving_other_form_edits(tmp_path: Path) -> None:
+def test_stt_page_save_preserves_other_form_edits(tmp_path: Path) -> None:
     from backend.translation_service import TranslationService
     _app()
     window = _window(tmp_path)
     before, _ = config_store.load_snapshot(window.config_path)
     window.host_input.setText('127.0.0.2')
     window.model_select_combo.setCurrentIndex(window.model_select_combo.findData('small'))
+    assert config_store.load_snapshot(window.config_path)[0]['stt']['model'] == before['stt']['model']
+    assert window._save_page(2)
     saved, _ = config_store.load_snapshot(window.config_path)
     assert saved['stt']['model'] == 'small'
     assert saved['server'] == before['server']
@@ -230,16 +240,17 @@ def test_stt_selection_publishes_without_saving_other_form_edits(tmp_path: Path)
     window.close()
 
 
-def test_stt_auto_save_preserves_external_revision_on_conflict(tmp_path: Path) -> None:
+def test_stt_page_save_preserves_external_revision_on_conflict(tmp_path: Path) -> None:
     _app()
     window = _window(tmp_path)
     external, revision = config_store.load_snapshot(window.config_path)
     external['stt']['model'] = 'base'
     config_store.save_config(window.config_path, external, expected_revision=revision)
-    window.model_select_combo.setCurrentIndex(window.model_select_combo.findData('small'))
+    window.model_select_combo.setCurrentIndex(window.model_select_combo.findData('tiny'))
+    assert not window._save_page(2)
     assert config_store.load_snapshot(window.config_path)[0]['stt']['model'] == 'base'
     assert window._dirty
-    assert 'not saved' in window.status_bar.currentMessage()
+    assert 'Could not save' in window.status_bar.currentMessage()
     window.close()
 
 
@@ -251,6 +262,7 @@ def test_theme_preference_is_saved_and_service_catalog_preserves_kinds(tmp_path:
     assert "NLLB" in window.service_catalog.profile_list.item(1).text()
 
     window._set_theme_mode("dark", persist=True)
+    assert window._save_page(4)
     assert config_manager.load_config(window.config_path)["gui"]["theme"] == "dark"
     window.service_catalog.profile_list.setCurrentRow(0)
     window.service_catalog.model_input.setText("gemma3:12b")
@@ -312,6 +324,7 @@ def test_noop_default_does_not_infer_vllm_and_profile_selection_is_explicit(tmp_
         "kind": "profile",
         "id": "ollama-imported",
     }
+    assert window._save_service()
 
     window.service_catalog.default_check.setChecked(False)
     cleared = window._collect_config_from_ui()
@@ -346,3 +359,43 @@ def test_api_profile_metadata_survives_edit(tmp_path: Path) -> None:
     assert api["api_key"] == "api-secret"
 
     window.close()
+
+
+def test_ollama_editor_save_drops_stale_host(tmp_path: Path) -> None:
+    _app()
+    window = _window(tmp_path)
+    try:
+        widget = window.service_catalog
+        remote = "http://100.82.191.113:11434"
+        widget.endpoint_input.setText(remote)
+        updated = widget.collect_into_config(window.config)
+        saved = updated["translation"]["service_profiles"][0]
+        assert saved["base_url"] == saved["endpoint"] == remote
+        assert "host" not in saved
+        assert config_store.service_profiles(updated)[0]["base_url"] == remote
+    finally:
+        window.close()
+
+
+def test_ollama_gui_connection_test_requests_draft_translation(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from PySide6 import QtWebSockets
+
+    _app()
+    window = _window(tmp_path)
+    messages = []
+    monkeypatch.setattr(QtWebSockets.QWebSocket, "open", lambda *args: None)
+    monkeypatch.setattr(QtWebSockets.QWebSocket, "sendTextMessage",
+                        lambda self, raw: messages.append(json.loads(raw)))
+    try:
+        window.backend_runner = SimpleNamespace(isRunning=lambda: True)
+        window.server_status.setText("Ready")
+        window._dirty = False
+        window._test_translation_profile({"id": "ollama-imported", "kind": "ollama"})
+        window._service_test_socket.connected.emit()
+        assert messages[0]["action"] == "translate"
+        assert messages[0]["draft_profile"]["engine"] == "ollama"
+        assert messages[0]["translation"]["selection"] == {"kind": "profile", "id": "ollama-imported"}
+    finally:
+        window.backend_runner = None
+        window.close()

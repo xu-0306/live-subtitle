@@ -1,21 +1,44 @@
 from __future__ import annotations
 
+from gui.fluent_kit import (
+    BusyProgressBar,
+    ElidedComboBox,
+    FreeTextComboBox,
+    disclosure_button,
+    make_card,
+    muted_label,
+)
+from gui.wheel_guard import protect_wheel_controls
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QComboBox,
     QFormLayout,
-    QFrame,
-    QGroupBox,
+    QGridLayout,
     QHBoxLayout,
-    QLabel,
-    QProgressBar,
-    QPushButton,
-    QToolButton,
     QSizePolicy,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
+from qfluentwidgets import (
+    BodyLabel,
+    CaptionLabel,
+    FlowLayout,
+    FluentIcon,
+    PrimaryPushButton,
+    PushButton,
+    SpinBox,
+)
+
+
+def _form(layout: QVBoxLayout) -> QFormLayout:
+    form = QFormLayout()
+    form.setHorizontalSpacing(14)
+    form.setVerticalSpacing(10)
+    form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+    layout.addLayout(form)
+    return form
 
 
 def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
@@ -30,13 +53,11 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     layout.setContentsMargins(8, 4, 14, 20)
     layout.setSpacing(14)
 
-    overview = QFrame()
+    overview = make_card()
     overview.setObjectName("localOverviewCard")
-    overview_layout = QVBoxLayout(overview)
-    overview_layout.setContentsMargins(18, 16, 18, 16)
-    overview_layout.setSpacing(10)
+    overview_layout = overview.layout()
 
-    details = QLabel(
+    details = BodyLabel(
         '<p style="margin:0 0 7px 0;"><b>ON-DEVICE · MANAGED RUNTIME</b></p>'
         '<p style="margin:0;">Download local GGUF models and the built-in llama.cpp runtime here, '
         'then select a model in the browser extension. No provider account or API endpoint is required.</p>'
@@ -46,46 +67,35 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     details.setWordWrap(True)
     details.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-    hardware = QLabel("Checking hardware...")
+    hardware = muted_label("Checking hardware...", small=True)
     hardware.setObjectName("runtimeNotice")
-    hardware.setWordWrap(True)
     hardware.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-    info_toggle = QToolButton()
-    info_toggle.setText("Model details")
-    info_toggle.setCheckable(True)
-    info_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-    info_toggle.setArrowType(Qt.ArrowType.RightArrow)
     technical = QWidget()
     technical_layout = QVBoxLayout(technical)
     technical_layout.setContentsMargins(0, 0, 0, 0)
-    technical_details = QLabel()
+    technical_layout.setSpacing(8)
+    technical_details = CaptionLabel()
     technical_details.setWordWrap(True)
     technical_layout.addWidget(technical_details)
     technical_layout.addWidget(hardware)
-    technical.hide()
-    def toggle_details(expanded):
-        technical.setVisible(expanded)
-        info_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-    info_toggle.toggled.connect(toggle_details)
-    hardware_warning = QLabel()
+    # ``disclosure_button`` hides ``technical`` and toggles it with the button.
+    info_toggle = disclosure_button("Model details", technical)
+
+    hardware_warning = CaptionLabel()
     hardware_warning.setWordWrap(True)
     hardware_warning.setObjectName("runtimeNotice")
+    hardware_warning.setTextColor(QColor(157, 93, 0), QColor(252, 225, 0))
     hardware_warning.hide()
 
-    model = QComboBox()
+    model = ElidedComboBox()
     model.setObjectName("model")
     model.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    model.setSizeAdjustPolicy(
-        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-    )
     for entry in models:
-        model.addItem(str(entry["name"]), entry["id"])
+        model.addItem(str(entry["name"]), userData=entry["id"])
 
-    target = QComboBox()
-    target.setEditable(True)
-    target.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-    target.lineEdit().setMaxLength(128)
+    target = FreeTextComboBox()
+    target.setMaxLength(128)
     target.setToolTip("Enter any language name or code. Suggestions are optional; quality depends on the model.")
     target.setObjectName("target")
     target.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -94,66 +104,67 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
         ("English", "en"),
         ("Japanese", "ja"),
     ):
-        target.addItem(label, language)
+        target.addItem(label, userData=language)
 
-    model_group = QGroupBox("Local model")
-    model_group.setObjectName("card")
-    model_form = QFormLayout(model_group)
-    model_form.setContentsMargins(18, 20, 18, 16)
-    model_form.setHorizontalSpacing(14)
-    model_form.setVerticalSpacing(10)
-    model_form.addRow("Model", model)
-    model_form.addRow("Default target language", target)
+    model_group = make_card("Local model")
+    model_form = _form(model_group.layout())
+    model_form.addRow(BodyLabel("Model"), model)
+    model_form.addRow(BodyLabel("Default target language"), target)
 
-    add_model = QPushButton("Add Hugging Face GGUF…")
+    add_model = PushButton(FluentIcon.ADD, "Add Hugging Face GGUF…")
     add_model.setObjectName("add_model")
     add_model.setProperty("kind", "secondary")
-    model_form.addRow("", add_model)
+    add_row = QHBoxLayout()
+    add_row.addWidget(add_model)
+    add_row.addStretch(1)
+    model_form.addRow("", add_row)
 
-    install = QPushButton("Download model")
+    install = PrimaryPushButton(FluentIcon.DOWNLOAD, "Download model")
     install.setObjectName("install")
     install.setEnabled(bool(models))
 
-    cancel = QPushButton("Cancel")
+    cancel = PushButton("Cancel")
     cancel.setObjectName("cancel")
     cancel.setProperty("kind", "secondary")
     cancel.setEnabled(False)
 
-    stop = QPushButton("Remove from extension choices")
+    stop = PushButton("Remove from extension choices")
     stop.setObjectName("stop")
     stop.setProperty("kind", "danger")
     stop.setEnabled(False)
 
-    actions = QHBoxLayout()
+    # Wraps onto a second line in the narrowest window instead of clipping.
+    actions = FlowLayout()
+    actions.setHorizontalSpacing(8)
+    actions.setVerticalSpacing(8)
     actions.addWidget(install)
     actions.addWidget(cancel)
     actions.addWidget(stop)
-    actions.addStretch(1)
 
-    progress = QProgressBar()
+    progress = BusyProgressBar()
     progress.setObjectName("progress")
     progress.setRange(0, 100)
     progress.setValue(0)
 
-    status = QLabel("Select a model to download. Captures start and stop it automatically.")
+    status = BodyLabel("Select a model to download. Captures start and stop it automatically.")
     status.setObjectName("localModelStatus")
     status.setWordWrap(True)
     status.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-    advanced = QGroupBox("Advanced")
-    advanced.setObjectName("card")
-    advanced_form = QFormLayout(advanced)
-    advanced_form.setContentsMargins(18, 20, 18, 16)
-    advanced_form.setHorizontalSpacing(14)
-    advanced_form.setVerticalSpacing(10)
+    advanced = make_card("Advanced")
+    advanced_grid = QGridLayout()
+    advanced_grid.setHorizontalSpacing(14)
+    advanced_grid.setVerticalSpacing(10)
+    advanced_grid.setColumnStretch(2, 1)
+    advanced.layout().addLayout(advanced_grid)
 
-    context = QSpinBox()
+    context = SpinBox()
     context.setObjectName("context")
     context.setRange(512, 8192)
     context.setValue(2048)
     context.setToolTip("Context memory available to the local model during translation.")
 
-    gpu_layers = QSpinBox()
+    gpu_layers = SpinBox()
     gpu_layers.setObjectName("gpu_layers")
     gpu_layers.setRange(-1, 999)
     gpu_layers.setValue(-1)
@@ -163,36 +174,43 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
         "Set 0 for CPU translation, or enter a positive number for an exact manual limit."
     )
 
-    gpu_layers_summary = QLabel(
-        "Auto dynamically sizes GPU offload for the selected Whisper model."
+    gpu_layers_summary = muted_label(
+        "Auto dynamically sizes GPU offload for the selected Whisper model.", small=True
     )
     gpu_layers_summary.setObjectName("gpu_layers_summary")
-    gpu_layers_summary.setWordWrap(True)
     gpu_layers_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-    port = QSpinBox()
+    port = SpinBox()
     port.setObjectName("port")
     port.setRange(1024, 65535)
     port.setValue(18080)
     port.setToolTip("Loopback service port used by local translation.")
 
-    advanced_form.addRow("Context memory", context)
-    advanced_form.addRow("GPU offload", gpu_layers)
-    advanced_form.addRow("", gpu_layers_summary)
-    advanced_form.addRow("Loopback port", port)
+    for spin in (context, gpu_layers, port):
+        spin.setFixedWidth(160)
+
+    # A grid (not QFormLayout) so the wrapped summary gets its real height.
+    advanced_grid.addWidget(BodyLabel("Context memory"), 0, 0)
+    advanced_grid.addWidget(context, 0, 1, Qt.AlignLeft)
+    advanced_grid.addWidget(BodyLabel("GPU offload"), 1, 0)
+    advanced_grid.addWidget(gpu_layers, 1, 1, Qt.AlignLeft)
+    advanced_grid.addWidget(gpu_layers_summary, 2, 1, 1, 2)
+    advanced_grid.addWidget(BodyLabel("Loopback port"), 3, 0)
+    advanced_grid.addWidget(port, 3, 1, Qt.AlignLeft)
 
     overview_layout.addWidget(details)
     overview_layout.addWidget(hardware_warning)
-    overview_layout.addWidget(info_toggle)
+    overview_layout.addWidget(info_toggle, 0, Qt.AlignLeft)
     overview_layout.addWidget(technical)
+    model_group.layout().addLayout(actions)
+    model_group.layout().addWidget(progress)
+    model_group.layout().addWidget(status)
     layout.addWidget(overview)
     layout.addWidget(model_group)
-    layout.addLayout(actions)
-    layout.addWidget(progress)
-    layout.addWidget(status)
     layout.addWidget(advanced)
     layout.addStretch(1)
 
+    protect_wheel_controls(parent)
     return {
         "add_model": add_model,
         "model": model,

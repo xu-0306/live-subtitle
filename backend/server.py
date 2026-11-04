@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from difflib import SequenceMatcher
 import gc
 import logging
@@ -231,6 +232,8 @@ try:
         RevisionConflictError,
         import_profiles,
         load_snapshot,
+        normalize_service_profile,
+        service_profiles,
         server_id_for_config,
     )
     from . import service_probe, settings_management
@@ -243,7 +246,7 @@ try:
 except ImportError:  # Fallback when running as a script.
     import model_manager
     from cache import LRUCache
-    from config_store import RevisionConflictError, import_profiles, load_snapshot, server_id_for_config
+    from config_store import RevisionConflictError, import_profiles, load_snapshot, normalize_service_profile, service_profiles, server_id_for_config
     import service_probe
     import settings_management
     from local_catalog import get_model, resolve_hf_model
@@ -1654,6 +1657,10 @@ async def _translate_text(
     context: str = "",
 ) -> str:
     translation_timeout = _normalize_timeout(session.cfg.get("timeout_sec"), 8.0)
+    if translation_timeout > 0:
+        translation_timeout = max(
+            translation_timeout, getattr(session.translator, "initial_timeout_sec", 0.0)
+        )
     if context:
         operation = session.scheduler.translate(
             session.translator, text, language, context=context
@@ -2648,8 +2655,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     websocket.state.capture_config = capture_config
                     websocket.state.capture_revision = capture_revision
                 update = payload.get('translation')
+                if payload.get('type') == 'test' and payload.get('target') == 'translation' and 'draft_profile' in payload:
+                    if not _trusted_profile_import_origin(websocket):
+                        raise ValueError('Draft tests require a trusted local client.')
+                    draft = normalize_service_profile(payload['draft_profile'])
+                    capture_config = copy.deepcopy(
+                        capture_config if isinstance(capture_config, dict) else app.state.translation_service.get_config()
+                    )
+                    profiles = service_profiles(capture_config)
+                    saved = next((item for item in profiles if item['id'] == draft['id']), {})
+                    if not draft['api_key']:
+                        draft['api_key'] = saved.get('api_key', '')
+                    translation = capture_config.setdefault('translation', {})
+                    translation['service_profiles'] = [item for item in profiles if item['id'] != draft['id']] + [draft]
+                    update = {**(update or {}), 'selection': {'kind': 'profile', 'id': draft['id']}}
+                    websocket.state.capture_config = capture_config
                 stt_cfg = _merge_config(stt_cfg, _normalize_stt_update(payload.get('stt')))
-                if payload.get('version') == 2:
+                if payload.get('version') == 2 and not (
+                    payload.get('type') == 'test' and payload.get('target') == 'translation'
+                ):
                     _validate_v2_stt_selection(stt_cfg, capture_config, capture_revision)
             else:
                 pending_message = initial
@@ -2683,7 +2707,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if payload.get('type') == 'test' and payload.get('target') == 'translation':
             translator = await _resolve_translator(app.state.translator_cache, translation_cfg,
                                                   app.state.http_client, app.state.translator_build_lock)
-            result = await app.state.translation_scheduler.translate(translator, 'Hello world', 'en')
+            health = await translator.health_check()
+            if not health.get('ok'):
+                raise RuntimeError(str(health.get('error') or 'Health check failed'))
+            if payload.get('action') in {'models', 'health'}:
+                result = f"Models reachable: {', '.join((health.get('models') or [])[:10]) or '(none listed)'}"
+            else:
+                result = await app.state.translation_scheduler.translate(translator, 'Hello world', 'en')
             await _safe_send(websocket, {'type': 'test_result', 'ok': True, 'message': result})
             await websocket.close()
             return

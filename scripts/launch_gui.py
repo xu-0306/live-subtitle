@@ -12,6 +12,7 @@ import traceback
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_MODULES = {
     'PySide6': 'PySide6',
+    'qfluentwidgets': 'PySide6-Fluent-Widgets',
     'yaml': 'PyYAML',
     'httpx': 'httpx',
     'fastapi': 'fastapi',

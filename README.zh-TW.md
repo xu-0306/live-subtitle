@@ -69,6 +69,8 @@ WhisperLiveKit STT
 
 後端與擴充功能會交換共用的模型與服務目錄，因此擴充功能顯示的擷取選項會反映桌面程式提供的可用資源。
 
+**授權。** Live Subtitle 以 [GNU General Public License v3.0](LICENSE) 釋出。桌面 GUI 使用同樣以 GPLv3 授權的 [PySide6-Fluent-Widgets](https://pypi.org/project/PySide6-Fluent-Widgets/)（`qfluentwidgets`），Windows 桌面版套件已內含該函式庫；其他隨附的第三方元件仍適用各自的授權。
+
 ## 瀏覽器擴充功能
 
 Manifest V3 擴充功能負責：

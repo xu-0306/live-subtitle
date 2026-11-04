@@ -69,6 +69,8 @@ The desktop GUI is organized by responsibility:
 
 The backend and extension exchange a shared model and service catalogue, so capture choices reflect what the desktop application has made available.
 
+**Licence.** Live Subtitle is released under the [GNU General Public License v3.0](LICENSE). The desktop GUI uses [PySide6-Fluent-Widgets](https://pypi.org/project/PySide6-Fluent-Widgets/) (`qfluentwidgets`), which is also licensed under GPLv3, and the Windows desktop package bundles it. Other bundled third-party components remain under their own licences.
+
 ## Browser extension
 
 The Manifest V3 extension:

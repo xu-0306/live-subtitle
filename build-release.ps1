@@ -4,6 +4,20 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::OpenRead($Path)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha256.ComputeHash($stream)
+        return [BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
 $root = $PSScriptRoot
 $pythonPath = [IO.Path]::GetFullPath((Join-Path $root $Python))
 $distRoot = [IO.Path]::GetFullPath((Join-Path $root "dist"))
@@ -76,9 +90,11 @@ try {
     $smokeAppData = Join-Path $root "build\smoke-appdata"
     New-Item -ItemType Directory -Path $smokeAppData -Force | Out-Null
     $env:APPDATA = $smokeAppData
-    & $exePath --smoke-test-gui
-    if ($LASTEXITCODE -ne 0) {
-        throw "Packaged GUI smoke test failed with exit code $LASTEXITCODE"
+    # The exe is a windowed app: "&" returns immediately (and leaves $LASTEXITCODE stale), so the ZIP step
+    # could race the still-running smoke test for its files. Wait for it and read its real exit code.
+    $smoke = Start-Process -FilePath $exePath -ArgumentList "--smoke-test-gui" -Wait -PassThru
+    if ($smoke.ExitCode -ne 0) {
+        throw "Packaged GUI smoke test failed with exit code $($smoke.ExitCode)"
     }
 
     New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
@@ -103,7 +119,7 @@ try {
         $appZip.Dispose()
     }
 
-    $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hash = Get-Sha256Hex -Path $archive
     $checksumPath = "$archive.sha256"
     "$hash  $([IO.Path]::GetFileName($archive))" | Set-Content -LiteralPath $checksumPath -Encoding ascii
 
@@ -124,7 +140,7 @@ try {
         $extensionZip.Dispose()
     }
 
-    $extensionHash = (Get-FileHash -LiteralPath $extensionArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $extensionHash = Get-Sha256Hex -Path $extensionArchive
     $extensionChecksumPath = "$extensionArchive.sha256"
     "$extensionHash  $([IO.Path]::GetFileName($extensionArchive))" | Set-Content -LiteralPath $extensionChecksumPath -Encoding ascii
 

@@ -5,6 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtCore, QtWidgets
+from qfluentwidgets import ComboBox, EditableComboBox, SimpleCardWidget
 
 from gui._local_model_form import build_form
 
@@ -43,7 +44,8 @@ def test_build_form_exposes_contract_controls_and_initial_values() -> None:
     }
 
     model = controls["model"]
-    assert isinstance(model, QtWidgets.QComboBox)
+    # Fluent ComboBox is a QPushButton, not a QComboBox; the item API is unchanged.
+    assert isinstance(model, ComboBox)
     assert [model.itemText(index) for index in range(model.count())] == [
         "Qwen small",
         "A very long local translation model name " + "x" * 120,
@@ -68,7 +70,8 @@ def test_build_form_exposes_contract_controls_and_initial_values() -> None:
     assert "automatically" in status.text()
 
     target = controls["target"]
-    assert isinstance(target, QtWidgets.QComboBox)
+    # Free-text language field is a Fluent EditableComboBox subclass, not a QComboBox.
+    assert isinstance(target, EditableComboBox)
     assert target.isEditable()
     assert [target.itemText(index) for index in range(target.count())] == [
         "Traditional Chinese",
@@ -94,7 +97,8 @@ def test_build_form_exposes_contract_controls_and_initial_values() -> None:
     assert progress.value() == 0
 
     advanced = controls["advanced"]
-    assert isinstance(advanced, QtWidgets.QGroupBox)
+    # The titled "Advanced" section is a Fluent card (SimpleCardWidget), not a QGroupBox.
+    assert isinstance(advanced, SimpleCardWidget)
     context = advanced.findChild(QtWidgets.QSpinBox, "context")
     gpu_layers = advanced.findChild(QtWidgets.QSpinBox, "gpu_layers")
     port = advanced.findChild(QtWidgets.QSpinBox, "port")
@@ -129,7 +133,8 @@ def test_empty_catalog_keeps_selector_empty_and_disables_install() -> None:
     controls = build_form(parent, [])
 
     model = controls["model"]
-    assert isinstance(model, QtWidgets.QComboBox)
+    # Fluent ComboBox is a QPushButton, not a QComboBox.
+    assert isinstance(model, ComboBox)
     assert model.count() == 0
     assert controls["install"].isEnabled() is False
     assert controls["cancel"].isEnabled() is False
