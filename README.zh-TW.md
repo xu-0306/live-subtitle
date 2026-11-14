@@ -1,97 +1,158 @@
-# Live Subtitle
+<div align="center">
 
-[English](README.md)
+<h1>Live Subtitle</h1>
 
-Live Subtitle 能將 Chrome／Chromium 分頁正在播放的音訊轉換成網頁即時字幕。語音辨識由本機 Whisper 後端負責；翻譯可以完全在本機執行，也可以使用使用者選擇的服務連線。
+<p><strong>瀏覽器分頁的即時字幕與翻譯，語音辨識在本機執行。</strong></p>
 
-本項目由三個部分組成：
+<p>
+  <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/github/license/xu-0306/live-subtitle"></a>
+  <a href="https://github.com/xu-0306/live-subtitle/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/xu-0306/live-subtitle"></a>
+  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%20x64-0078D4">
+  <img alt="Browser: Chrome / Edge" src="https://img.shields.io/badge/browser-Chrome%20%7C%20Edge-4285F4">
+</p>
 
-- Chrome 擴充功能：擷取分頁音訊並顯示字幕疊加層。
-- Windows 桌面程式：控制本機後端、模型與設定。
-- FastAPI 後端：執行串流 STT 並協調選用的翻譯功能。
+<p>
+  <a href="#快速開始">快速開始</a> ·
+  <a href="#功能">功能</a> ·
+  <a href="#運作方式">運作方式</a> ·
+  <a href="https://github.com/xu-0306/live-subtitle/releases">下載</a> ·
+  <a href="README.md">English</a>
+</p>
+
+</div>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/media/demo.png">
+    <img src="docs/media/demo.gif" alt="瀏覽器分頁正在播放英文演講，Live Subtitle 把講者的話和繁體中文翻譯顯示成影片上的字幕" width="760">
+  </picture>
+  <br>
+  <sub>影片：Conor Neill〈<a href="https://www.youtube.com/watch?v=c8_BIamLESg">Improve Your Speaking</a>〉，CC BY 授權。</sub>
+</p>
+
+Live Subtitle 擷取 Chrome／Edge 分頁的音訊，在本機以 Whisper 轉成字幕並顯示在網頁上。翻譯為選用功能，可在本機執行，也可使用自行設定的翻譯服務。
 
 > [!NOTE]
-> Live Subtitle 目前是公開預覽版本。已打包的 Windows 程式與 Chrome 擴充功能可從 [Releases 頁面](https://github.com/xu-0306/live-subtitle/releases)下載。
+> 公開預覽版，僅支援 Windows。擴充功能需透過開發人員模式載入；Windows 程式尚未簽署，首次執行時 SmartScreen 可能出現警告。
 
-## 主要功能
+## 快速開始
 
-- 擷取目前瀏覽器分頁的 WebM／Opus 音訊。
-- 透過 WebSocket 將音訊串流至本機後端。
-- 使用 WhisperLiveKit 產生即時語音字幕。
-- 直接在目前網頁中顯示字幕。
-- 可調整字幕位置、大小、透明度、歷史行數及 partial 結果。
-- 每次擷取都能選擇 STT 模型、來源語言、翻譯方式及目標語言。
-- 只在真正需要時載入模型。
-- 支援多個瀏覽器分頁，並協調共用的後端資源。
+需求：64 位元 Windows，以及 Chrome、Edge 等 Chromium 瀏覽器。建議使用 NVIDIA 顯示卡，但非必要。
 
-## 運作方式
+1. **下載**：到[最新版本](https://github.com/xu-0306/live-subtitle/releases/latest)下載 `Live-Subtitle-windows-x64.zip` 和 `Live-Subtitle-chrome-extension-v<版本>.zip` 兩個檔案。
+2. **開啟桌面程式**：解壓縮 Windows 套件，執行 `live-subtitle.exe`。首次啟動時會讀取顯示卡記憶體，推薦語音模型與翻譯設定。
+3. **啟動伺服器**：在 **Server** 頁按 **Start backend**，等待狀態顯示為執行中。
+4. **加入擴充功能**：解壓縮擴充功能套件，打開 `chrome://extensions`，開啟右上角的 **開發人員模式**，按 **載入未封裝項目**，選擇剛解壓縮的資料夾。
+5. **開始擷取**：在正在播放語音的分頁點工具列上的 Live Subtitle 圖示，選擇翻譯方式與目標語言，按 **Start capture**。字幕框可拖曳及調整大小。
 
-```text
-Chrome／Chromium 分頁音訊
-            ↓
-Manifest V3 擴充功能
-            ↓ WebSocket
-本機 FastAPI 後端
-            ↓
-WhisperLiveKit STT
-            ↓
-選用的翻譯
-            ↓
-網頁字幕疊加層
+語音模型在首次使用時下載，因此第一次擷取需要較長的啟動時間。
+
+<details>
+<summary>改從原始碼執行</summary>
+
+需求：Windows、Python 3.10 以上、對應 CUDA 或 CPU 環境的 PyTorch（需另外安裝），以及 Chromium 瀏覽器。
+
+```powershell
+git clone https://github.com/xu-0306/live-subtitle.git
+Set-Location live-subtitle
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r backend\requirements.txt
+python -m pip install -r gui\requirements.txt
 ```
 
-擴充功能的 Popup 負責下一次擷取所使用的選項；Options 設定頁與桌面 GUI 均可管理模型、翻譯服務及桌面預設，透過本機後端共用同一份版本化設定檔。桌面 GUI 另外負責後端生命週期與進階調校。
+安裝 PyTorch 後啟動桌面程式：
 
-## 翻譯選項
+```powershell
+.\Start-GUI.bat
+```
 
-翻譯並非必要功能。選擇 **None** 時仍可正常產生語音字幕。
+`.\Start-GUI.bat --check` 只做環境檢查。最後在 `chrome://extensions` 把 `chrome-extension` 資料夾載入為未封裝擴充功能。
 
-| 選項 | 負責內容 |
-| --- | --- |
-| **None** | 顯示語音辨識結果，不進行翻譯。 |
-| **Local translation** | 下載並管理本機 llama.cpp runtime 與 GGUF 翻譯模型，在這台電腦上執行推論。 |
-| **Translation services** | 保存本機、區網、自架或雲端服務的連線，例如 Ollama、OpenAI-compatible API、vLLM 與相容 adapter；由所選服務執行翻譯。 |
+</details>
 
-**Local translation** 與 **Translation services** 對使用者而言都提供翻譯能力，但執行方式不同：前者管理本機 runtime 與模型資產，後者管理已存在之翻譯服務的連線。
+## 功能
 
-## 桌面程式
+- **任何分頁皆可使用**：影音網站、直播、網頁會議皆可，並可同時擷取多個分頁。
+- **選用翻譯**：只顯示原文、使用本機 GGUF 模型，或連接 Ollama、OpenAI 相容 API 等翻譯服務。
+- **模型推薦**：首次啟動時讀取顯示卡記憶體，推薦低延遲、日常或高品質組合；沒有支援的顯示卡時推薦較小的模型。
+- **字幕可調整**：位置、大小、字體大小、透明度、歷史行數，以及是否顯示辨識中的文字。
+- **按需載入模型**：開始擷取才載入模型，最後一個分頁停止後釋放本機翻譯模型。
 
-桌面 GUI 依照職責分頁：
+### 桌面程式
+
+<table>
+  <tr>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/gui-local-dark.png">
+        <img src="docs/media/gui-local-light.png" alt="Local translation 頁面：選擇在本機執行的翻譯模型和預設目標語言，再按下載">
+      </picture>
+      <p align="center"><em>本機翻譯模型</em></p>
+    </td>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/gui-services-dark.png">
+        <img src="docs/media/gui-services-light.png" alt="Translation services 頁面：已儲存的連線清單，例如 Ollama 和 OpenAI 相容 API，右側是連線設定和測試連線按鈕">
+      </picture>
+      <p align="center"><em>翻譯服務連線</em></p>
+    </td>
+  </tr>
+</table>
 
 | 頁面 | 用途 |
 | --- | --- |
-| **Server** | 啟動、停止、重新啟動及檢查本機後端。 |
-| **Local translation** | 下載並管理本機 GGUF 模型與由程式管理的 llama.cpp runtime。 |
-| **STT models** | 選擇並檢查 Whisper 語音辨識模型。 |
+| **Server** | 啟動、停止、重新啟動本機伺服器，查看日誌。 |
+| **Local translation** | 下載並管理在本機執行的翻譯模型。 |
+| **STT models** | 選擇 Whisper 語音辨識模型。 |
 | **Tuning** | 調整字幕與串流行為。 |
-| **Translation services** | 建立並測試雲端、區網或自架的翻譯服務 profiles。 |
-| **Settings** | 管理程式行為、設定檔位置、主題及共用模型儲存根目錄。 |
+| **Translation services** | 儲存並測試 Ollama、OpenAI 相容 API、vLLM 等服務的連線。 |
+| **Settings** | 主題、設定與模型存放位置、模型推薦。 |
 
-後端與擴充功能會交換共用的模型與服務目錄，因此擴充功能顯示的擷取選項會反映桌面程式提供的可用資源。
+## 運作方式
 
-**授權。** Live Subtitle 以 [GNU General Public License v3.0](LICENSE) 釋出。桌面 GUI 使用同樣以 GPLv3 授權的 [PySide6-Fluent-Widgets](https://pypi.org/project/PySide6-Fluent-Widgets/)（`qfluentwidgets`），Windows 桌面版套件已內含該函式庫；其他隨附的第三方元件仍適用各自的授權。
+```mermaid
+flowchart LR
+  tab["瀏覽器分頁<br/>正在播放聲音"] -->|聲音| srv["語音辨識<br/>（本機）"]
+  srv -->|文字| tr["翻譯<br/>（可關閉）"]
+  tr -->|字幕| tab
+  app["桌面程式"] -. 啟動與設定 .-> srv
+  tr -. "本機或<br/>翻譯服務" .- svc["本機模型 /<br/>Ollama / API"]
+```
 
-## 瀏覽器擴充功能
+擴充功能將分頁音訊傳送至本機伺服器（`ws://127.0.0.1:8765/asr`）。伺服器以 [WhisperLiveKit](https://github.com/QuentinFuxa/WhisperLiveKit) 進行語音辨識，視設定翻譯後將字幕送回網頁。桌面程式負責保存設定、模型檔案與翻譯服務連線，並啟動及停止伺服器。
 
-Manifest V3 擴充功能負責：
+### 翻譯方式
 
-- 只在開始擷取時請求分頁音訊權限。
-- 在 offscreen extension document 中維持音訊擷取。
-- 將音訊傳送至設定的本機 WebSocket endpoint。
-- 在網頁字幕疊加層顯示 partial 與 final 字幕。
-- 保存擷取偏好與翻譯選項，供之後的工作階段使用。
+| 選項 | 說明 |
+| --- | --- |
+| **None** | 只顯示辨識出的原文，不翻譯。 |
+| **Local translation** | 下載 llama.cpp 執行環境與 GGUF 翻譯模型，在本機翻譯。 |
+| **Translation services** | 使用已儲存的服務連線（本機、區網、自架或雲端的 Ollama、OpenAI 相容 API、vLLM 等），由該服務翻譯。 |
 
-預設 endpoint 是 `ws://127.0.0.1:8765/asr`，後端預設只接受本機連線。
+### 隱私
 
-直接啟動後端而不開啟桌面 GUI 時，可在擴充功能的 **Options** 完成常用設定：下載／移除 Whisper 模型、下載或發布本機 GGUF、加入及編輯公開 Hugging Face GGUF 目錄項目、管理翻譯服務 profiles，並保存共用的 STT／翻譯預設與目標語言。Options 的服務管理連線限定本機後端；密鑰可提交給後端保存，但後端不會再傳回密鑰。GUI 在沒有未儲存表單變更時會同步載入外部更新。
+分頁音訊只會傳送到本機伺服器。選用翻譯服務時，傳送的是辨識後的文字而非音訊，服務可能位於本機、區網或雲端。使用本機翻譯時，辨識與翻譯都在同一台電腦完成。API 金鑰、帳密與本機模型路徑不會傳給網頁。
 
-## 模型與應用程式資料
+## 目前狀態與限制
 
-Release packages 不包含模型。STT 模型可從 GUI 或 Options 主動下載；受管理的 GGUF 翻譯模型可從 GUI 的 **Local translation** 或擴充功能 Options 下載。
+- 仍在持續開發中。辨識與翻譯品質取決於模型、語言、音訊與硬體。
+- 沒有顯示卡時，本機辨識與翻譯會明顯變慢。
+- 桌面程式只支援 64 位元 Windows。
+- 擴充功能需透過開發人員模式手動載入，尚未上架 Chrome 線上應用程式商店。
+- Windows 執行檔尚未做程式碼簽署。
 
-全新安裝首次開啟時會執行模型設定助手。助手透過 `nvidia-smi` 偵測 NVIDIA GPU 的總顯存與目前可用顯存，將 Whisper 與本機翻譯模型視為同一份顯存預算，推薦低延遲、日常或高品質組合。8GB 以下或未偵測到支援的 NVIDIA GPU 時，預設建議改用較小的 Whisper 與 CPU 翻譯，亦可選擇稍後設定外部翻譯服務。可隨時從 **Settings → Recommend model setup** 重新偵測。
+<details>
+<summary>模型、資料夾與設定</summary>
 
-套用建議只會保存選擇，不會自行下載大型檔案。使用者仍需在 **STT models** 與 **Local translation** 檢查大小並主動下載；推薦的本機翻譯模型通過下載與雜湊驗證後，才會成為桌面預設。
+### 模型與程式資料
+
+發佈套件不含模型。語音模型在首次使用時下載，也可從 GUI 或擴充功能的 Options 預先下載；本機翻譯模型從 **Local translation** 頁或 Options 下載。
+
+首次啟動時，設定助手透過 `nvidia-smi` 讀取 NVIDIA 顯示卡的總記憶體與可用記憶體，合併計算 Whisper 與本機翻譯的需求，推薦低延遲、日常或高品質組合。低於 8 GB 或沒有支援的 NVIDIA 顯示卡時，建議較小的 Whisper 搭配 CPU 翻譯，並說明外部翻譯服務的選項。可從 **Settings → Recommend model setup** 重新偵測。
+
+套用推薦只會儲存選擇，不會自動下載大型檔案；請在 **STT models** 與 **Local translation** 確認大小後下載。推薦的本機翻譯模型需下載並通過雜湊檢查後才會成為預設。
 
 Windows 預設資料結構：
 
@@ -102,96 +163,46 @@ Windows 預設資料結構：
 └─ Local Translation Models\
 ```
 
-只需在 **Settings → Model storage** 設定一次共用儲存根目錄。Whisper 權重與本機翻譯資產會分別保存在根目錄下的不同資料夾。
+在 **Settings → Model storage** 設定共用的模型資料夾，Whisper 權重與本機翻譯檔案會分別存放在其下。
 
-舊版 `%APPDATA%\STT-TTS\config.yaml` 可複製到新的應用程式目錄；舊目錄不會被刪除，設定中明確指定的模型路徑也能繼續使用。
+舊版 `%APPDATA%\STT-TTS\config.yaml` 可複製到新資料夾；舊資料夾不會被刪除，已明確指定的模型路徑仍可使用。
 
-## 設定模型
+### 不使用桌面程式
 
-執行時使用以下優先順序：
+直接啟動後端時，可在擴充功能的 **Options** 頁完成常用設定：下載或移除 Whisper 模型、下載或發布本機 GGUF 模型、新增及編輯公開的 Hugging Face GGUF 項目、管理翻譯服務連線，以及儲存共用的語音、翻譯與目標語言預設值。Options 僅管理本機後端；金鑰可交由後端保存，但後端不會回傳金鑰。桌面程式沒有未儲存的修改時，會自動載入這些變更。
 
-1. 瀏覽器擴充功能為本次擷取選擇的項目
-2. 桌面 GUI 保存的預設值
-3. `backend/config.yaml` 中的內建預設值
+### 設定的優先順序
 
-擴充功能可選擇 STT 與翻譯行為，但不能覆蓋桌面程式的模型儲存路徑。公開目錄資料及傳送至 content script 的訊息不包含 API key、憑證或本機模型路徑。
+1. 擴充功能中本次擷取的選擇
+2. 桌面程式儲存的預設值
+3. `backend/config.yaml` 的預設值
 
-## 本機優先行為
+擴充功能可選擇語音與翻譯選項，但無法變更桌面程式的模型存放位置。
 
-在預設流程中，瀏覽器音訊只會傳送到本機後端進行語音辨識。若選擇翻譯服務 profile，辨識後的文字會傳送至該服務；服務可能位於本機、區網或雲端。使用 Local translation 時，STT 與翻譯都在同一台電腦上處理。
+### 專案結構
 
-停用翻譯時不會載入翻譯模型。受管理的本機翻譯 runtime 會按需啟動，並在最後一個使用者中斷連線後釋放。
+- `backend/` — 本機伺服器：串流語音辨識、翻譯、模型管理和設定
+- `gui/` — 桌面程式（PySide6）
+- `chrome-extension/` — 分頁擷取、設定、背景 service worker、offscreen 音訊和字幕疊加層
+- `docs/` — 架構、模型、啟動和介面行為文件
+- `scripts/` — 從原始碼執行的輔助工具
 
-## 取得應用程式
-
-[Releases 頁面](https://github.com/xu-0306/live-subtitle/releases)提供：
-
-- Windows x64 portable 桌面程式。
-- 可透過開發人員模式手動載入的 Chrome／Chromium 擴充功能。
-
-各版本的安裝步驟、檔案名稱及已知限制會附在對應的 Release 說明中。
-
-## 從原始碼執行
-
-環境需求：
-
-- Windows 與 Python 3.10 或更新版本
-- Chrome、Edge 或其他相容的 Chromium 瀏覽器
-- 依 CUDA 或 CPU 環境安裝適合的 PyTorch
-- 安裝 `backend/requirements.txt` 與 `gui/requirements.txt` 中的套件
-
-建立環境：
-
-```powershell
-git clone https://github.com/xu-0306/live-subtitle.git
-Set-Location live-subtitle
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python --version
-python -m pip install --upgrade pip
-python -m pip install -r backend\requirements.txt
-python -m pip install -r gui\requirements.txt
-```
-
-請另外安裝符合 CUDA 或 CPU 環境的 PyTorch，接著啟動桌面程式：
-
-```powershell
-.\Start-GUI.bat
-```
-
-只執行環境檢查：
-
-```powershell
-.\Start-GUI.bat --check
-```
-
-最後在 `chrome://extensions` 將 `chrome-extension` 目錄載入為未封裝擴充功能。
-
-## 專案結構
-
-- `backend/` — FastAPI 伺服器、串流 STT、翻譯、模型管理與設定
-- `gui/` — PySide6 桌面程式
-- `chrome-extension/` — 瀏覽器擷取、設定、service worker、offscreen 音訊與字幕疊加層
-- `docs/` — 架構、模型、啟動及 UI 行為文件
-- `scripts/` — 原始碼啟動輔助工具
+</details>
 
 ## 相關文件
 
 - [翻譯服務與模型選擇](docs/TRANSLATION_SERVICES.md)
 - [受管理的本機翻譯](docs/LOCAL_TRANSLATION_MVP.md)
 - [架構圖](docs/STT_TRANSLATION_ARCHITECTURE.md)
-- [GUI 啟動與打包](docs/GUI_STARTUP.md)
-
-## 目前狀態
-
-Live Subtitle 仍在持續開發中。語音辨識與翻譯品質取決於所選模型、語言、來源音訊及可用硬體。GPU 並非必要，但 CPU 與 GPU 環境的本機推論速度可能有明顯差異。
-
-Chrome 擴充功能目前需透過開發人員模式手動載入，Windows 執行檔也尚未進行程式碼簽署。
-
-## Credits
-
-- [WhisperLiveKit](https://github.com/QuentinFuxa/WhisperLiveKit) — 串流 STT 引擎
+- [桌面程式啟動與打包](docs/GUI_STARTUP.md)
 
 ## 問題回報
 
-請[建立 GitHub Issue](https://github.com/xu-0306/live-subtitle/issues)，並附上 Windows 版本、使用的 STT 模型、翻譯方式、CPU／GPU 環境及相關錯誤或日誌。
+請[建立 Issue](https://github.com/xu-0306/live-subtitle/issues)，並附上 Windows 版本、語音模型、翻譯方式、CPU／GPU，以及錯誤訊息或紀錄。
+
+## 致謝與授權
+
+- [WhisperLiveKit](https://github.com/QuentinFuxa/WhisperLiveKit) — 串流語音辨識引擎。
+- [PySide6-Fluent-Widgets](https://pypi.org/project/PySide6-Fluent-Widgets/) — 桌面程式介面元件（GPLv3），已包含在 Windows 套件中。
+
+Live Subtitle 以 [GNU General Public License v3.0](LICENSE) 釋出，其他隨附的第三方元件仍適用各自的授權。

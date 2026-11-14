@@ -1,97 +1,160 @@
-# Live Subtitle
+<div align="center">
 
-[繁體中文](README.zh-TW.md)
+<h1>Live Subtitle</h1>
 
-Live Subtitle turns audio playing in a Chrome or Chromium tab into live, on-page subtitles. Speech recognition runs through a local Whisper backend, while translation can remain entirely on the device or use a service selected by the user.
+<p><strong>Real-time subtitles and translation for audio playing in a browser tab. Speech recognition runs locally.</strong></p>
 
-The project combines three parts:
+<p>
+  <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/github/license/xu-0306/live-subtitle"></a>
+  <a href="https://github.com/xu-0306/live-subtitle/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/xu-0306/live-subtitle"></a>
+  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%20x64-0078D4">
+  <img alt="Browser: Chrome / Edge" src="https://img.shields.io/badge/browser-Chrome%20%7C%20Edge-4285F4">
+</p>
 
-- A Chrome extension that captures tab audio and renders the subtitle overlay.
-- A Windows desktop application that controls the local backend, models, and settings.
-- A FastAPI backend that performs streaming STT and coordinates optional translation.
+<p>
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="https://github.com/xu-0306/live-subtitle/releases">Download</a> ·
+  <a href="README.zh-TW.md">繁體中文</a>
+</p>
+
+</div>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/media/demo.png">
+    <img src="docs/media/demo.gif" alt="An English talk plays in a browser tab while Live Subtitle shows the speech and a Traditional Chinese translation as subtitles over the video" width="760">
+  </picture>
+  <br>
+  <sub>Video: <a href="https://www.youtube.com/watch?v=c8_BIamLESg">“Improve Your Speaking”</a> by Conor Neill, CC BY.</sub>
+</p>
+
+Live Subtitle captures the audio of a Chrome or Edge tab, turns the speech into subtitles with Whisper on the local machine, and shows them over the page. Translation is optional and can run on the same machine or through a translation service you configure.
 
 > [!NOTE]
-> Live Subtitle is currently a public preview. Packaged Windows and Chrome extension downloads are available on the [Releases page](https://github.com/xu-0306/live-subtitle/releases).
+> Public preview, Windows only. The extension is loaded through Developer mode, and the Windows app is not code-signed, so SmartScreen may warn on first launch.
 
-## What it does
+## Quick start
 
-- Captures WebM/Opus audio from the active browser tab.
-- Streams audio to the local backend over WebSocket.
-- Produces live speech subtitles with WhisperLiveKit.
-- Displays subtitles directly on the current page.
-- Supports configurable subtitle position, size, opacity, history, and partial results.
-- Lets each capture choose its STT model, source language, translation option, and target language.
-- Manages local models without loading them until they are actually needed.
-- Supports multiple browser tabs while coordinating shared backend resources.
+Requirements: 64-bit Windows and a Chromium-based browser (Chrome, Edge). An NVIDIA GPU is recommended but not required.
 
-## How it works
+1. **Download** both files from the [latest release](https://github.com/xu-0306/live-subtitle/releases/latest): `Live-Subtitle-windows-x64.zip` and `Live-Subtitle-chrome-extension-v<version>.zip`.
+2. **Start the desktop app.** Unzip the Windows package and run `live-subtitle.exe`. On first launch it reads the GPU's memory and recommends a speech model and translation setup.
+3. **Start the server.** On the **Server** page, click **Start backend** and wait until it reports that it is running.
+4. **Add the extension.** Unzip the extension package, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose the unzipped folder.
+5. **Start capturing.** In a tab that is playing speech, click the Live Subtitle icon in the toolbar, choose a translation option and target language, and click **Start capture**. The subtitle box can be dragged and resized.
 
-```text
-Chrome/Chromium tab audio
-          ↓
-Manifest V3 extension
-          ↓ WebSocket
-Local FastAPI backend
-          ↓
-WhisperLiveKit STT
-          ↓
-Optional translation
-          ↓
-On-page subtitle overlay
+Each speech model is downloaded the first time it is used, so the first capture takes longer to start.
+
+<details>
+<summary>Run from source instead</summary>
+
+Requirements: Windows, Python 3.10 or newer, a PyTorch build for your CUDA or CPU setup (installed separately), and a Chromium browser.
+
+```powershell
+git clone https://github.com/xu-0306/live-subtitle.git
+Set-Location live-subtitle
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r backend\requirements.txt
+python -m pip install -r gui\requirements.txt
 ```
 
-The extension controls the choices for the next capture. The desktop application owns persistent settings, model files, translation-service profiles, and the backend lifecycle.
+Install PyTorch for your environment, then start the desktop app:
 
-## Translation choices
+```powershell
+.\Start-GUI.bat
+```
 
-Translation is optional. Speech subtitles continue to work when translation is set to **None**.
+`.\Start-GUI.bat --check` runs only the environment check. Load the `chrome-extension` folder as an unpacked extension from `chrome://extensions`.
 
-| Choice | Responsibility |
-| --- | --- |
-| **None** | Show the recognized speech without translation. |
-| **Local translation** | Download and manage a local llama.cpp runtime and GGUF translation models. Inference runs on this computer. |
-| **Translation services** | Save connections to local, LAN, self-hosted, or cloud services such as Ollama, OpenAI-compatible APIs, vLLM, and compatible adapters. The selected service performs translation. |
+</details>
 
-**Local translation** and **Translation services** provide the same user-facing capability through different execution paths: one manages on-device runtime assets, while the other manages connections to an already available service.
+## Features
 
-## Desktop application
+- **Works on any tab:** video sites, livestreams and web meetings. Several tabs can be captured at the same time.
+- **Optional translation:** original text only, a local GGUF model, or a configured service such as Ollama or an OpenAI-compatible API.
+- **Model recommendation:** on first launch the app reads GPU memory and suggests a low-latency, everyday or quality combination; without a supported GPU it suggests a smaller model.
+- **Adjustable subtitles:** position, size, text size, opacity, number of history lines, and whether partial results are shown.
+- **Models load on demand:** nothing is loaded until a tab starts capturing, and the local translation model is released when the last tab stops.
 
-The desktop GUI is organized by responsibility:
+### Desktop app
+
+<table>
+  <tr>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/gui-local-dark.png">
+        <img src="docs/media/gui-local-light.png" alt="Local translation page: choose an on-device translation model and default target language, then download it">
+      </picture>
+      <p align="center"><em>Local translation models</em></p>
+    </td>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/gui-services-dark.png">
+        <img src="docs/media/gui-services-light.png" alt="Translation services page: a list of saved connections such as Ollama and an OpenAI-compatible API, with connection details and a Test connection button">
+      </picture>
+      <p align="center"><em>Translation service connections</em></p>
+    </td>
+  </tr>
+</table>
 
 | Page | Purpose |
 | --- | --- |
-| **Server** | Start, stop, restart, and inspect the local backend. |
-| **Local translation** | Download and manage on-device GGUF models and an app-managed llama.cpp runtime. |
-| **STT models** | Select and inspect Whisper speech-recognition models. |
-| **Tuning** | Adjust subtitle and streaming behavior. |
-| **Translation services** | Create and test cloud, LAN, or self-hosted translation profiles. |
-| **Settings** | Manage application behavior, settings location, theme, and the shared model-storage root. |
+| **Server** | Start, stop and restart the local server, and read its logs. |
+| **Local translation** | Download and manage translation models that run on this computer. |
+| **STT models** | Choose the Whisper speech-recognition model. |
+| **Tuning** | Adjust subtitle and streaming behaviour. |
+| **Translation services** | Save and test connections to Ollama, OpenAI-compatible APIs, vLLM and similar services. |
+| **Settings** | Theme, where settings and models are stored, and the model recommendation. |
 
-The backend and extension exchange a shared model and service catalogue, so capture choices reflect what the desktop application has made available.
+## How it works
 
-**Licence.** Live Subtitle is released under the [GNU General Public License v3.0](LICENSE). The desktop GUI uses [PySide6-Fluent-Widgets](https://pypi.org/project/PySide6-Fluent-Widgets/) (`qfluentwidgets`), which is also licensed under GPLv3, and the Windows desktop package bundles it. Other bundled third-party components remain under their own licences.
+```mermaid
+flowchart LR
+  tab["Browser tab<br/>playing audio"] -->|audio| srv["Speech recognition<br/>(local)"]
+  srv -->|text| tr["Translation<br/>(optional)"]
+  tr -->|subtitles| tab
+  app["Desktop app"] -. starts and configures .-> srv
+  tr -. "local or<br/>service" .- svc["Local model /<br/>Ollama / API"]
+```
 
-## Browser extension
+The extension captures the tab's audio and sends it to the local server at `ws://127.0.0.1:8765/asr`. The server turns speech into text with [WhisperLiveKit](https://github.com/QuentinFuxa/WhisperLiveKit), optionally translates it, and sends the subtitles back to the page. The desktop app stores the settings, model files and translation-service connections, and starts and stops the server.
 
-The Manifest V3 extension:
+### Translation choices
 
-- Requests tab-capture permission only when capture starts.
-- Keeps audio capture in an offscreen extension document.
-- Sends audio to the configured local WebSocket endpoint.
-- Displays partial and final subtitles in the page overlay.
-- Stores capture preferences and translation selections for later sessions.
+| Choice | What happens |
+| --- | --- |
+| **None** | Show the recognized speech without translation. |
+| **Local translation** | The app downloads a llama.cpp runtime and GGUF translation models. Translation runs on this computer. |
+| **Translation services** | Use a saved service connection (local, network, self-hosted or cloud: Ollama, OpenAI-compatible APIs, vLLM and compatible adapters). The service does the translation. |
 
-The default endpoint is `ws://127.0.0.1:8765/asr`. The backend accepts local connections by default.
+### Privacy
 
-## Models and application data
+Tab audio is sent only to the local server. If a translation service is selected, the recognized text (not the audio) is sent to that service, which may run locally, on the network or in the cloud. With local translation, recognition and translation both stay on the same machine. API keys, credentials and local model paths are never passed to web pages.
 
-Models are not bundled with the Release packages. STT models are downloaded when first needed, while managed GGUF translation models are downloaded from the **Local translation** page.
+## Status and limits
 
-On a fresh install, a model setup assistant detects NVIDIA total and currently free VRAM through `nvidia-smi`. It budgets Whisper and local translation together, then recommends a low-latency, everyday, or quality pair. Below 8 GiB, or when no supported NVIDIA GPU is detected, it recommends a smaller Whisper model with CPU translation and explains the external-service fallback. Run detection again at any time under **Settings → Recommend model setup**.
+- In active development. Recognition and translation quality depend on the model, language, audio and hardware.
+- Without a GPU, local recognition and translation are noticeably slower.
+- Windows x64 only for the desktop app.
+- The extension is loaded manually through Developer mode; it is not in the Chrome Web Store.
+- The Windows executable is not code-signed.
 
-Applying a recommendation saves choices but does not download large files automatically. Review and start downloads from **STT models** and **Local translation**. A recommended local translation model becomes the desktop default only after its download and hash verification finish.
+<details>
+<summary>Models, data folders and configuration</summary>
 
-The default Windows data layout is:
+### Models and application data
+
+Models are not included in the release packages. Speech models download the first time they are needed; local translation models are downloaded from the **Local translation** page.
+
+On first launch, a setup assistant reads total and free NVIDIA video memory through `nvidia-smi`, budgets Whisper and local translation together, and recommends a low-latency, everyday or quality pair. Below 8 GiB, or without a supported NVIDIA GPU, it recommends a smaller Whisper model with CPU translation and explains the external-service option. Run it again under **Settings → Recommend model setup**.
+
+Applying a recommendation saves the choices but does not start large downloads. Start them from **STT models** and **Local translation**. A recommended local translation model becomes the default only after its download and hash check finish.
+
+Default data layout on Windows:
 
 ```text
 %APPDATA%\Live Subtitle
@@ -100,96 +163,46 @@ The default Windows data layout is:
 └─ Local Translation Models\
 ```
 
-Set the shared storage root once under **Settings → Model storage**. Whisper weights and local-translation assets remain separated beneath that root.
+Set the shared model folder once under **Settings → Model storage**. Whisper weights and local translation files stay in separate folders beneath it.
 
-Older `%APPDATA%\STT-TTS\config.yaml` settings can be copied to the new application directory. The legacy directory is not deleted, and explicitly configured model paths remain supported.
+Settings from the older `%APPDATA%\STT-TTS\config.yaml` can be copied to the new folder. The old folder is not deleted, and model paths you set explicitly keep working.
 
-## Configuration model
+### Using the extension without the desktop app
 
-Runtime choices use the following priority:
+If you start the backend directly instead of through the desktop app, the extension's **Options** page covers the common settings: download or remove Whisper models, download or publish local GGUF models, add and edit public Hugging Face GGUF entries, manage translation-service connections, and save the shared speech, translation and target-language defaults. Options only manages a backend on this computer. Keys can be sent to the backend for storage, but the backend never sends them back. The desktop app picks up these changes when it has no unsaved edits of its own.
 
-1. Browser-extension selection for the current capture
-2. Defaults saved by the desktop GUI
+### Which setting wins
+
+1. The choice made in the extension for the current capture
+2. Defaults saved in the desktop app
 3. Defaults in `backend/config.yaml`
 
-The extension may select STT and translation behavior, but it cannot override desktop model-storage paths. Public catalogue data and messages sent to content scripts omit API keys, credentials, and local model paths.
+The extension can choose speech and translation options but cannot change where the desktop app stores models.
 
-## Local-first behavior
+### Project layout
 
-In the default workflow, browser audio is sent only to the local backend for speech recognition. If a translation-service profile is selected, the recognized text is sent to that configured service, which may run locally, on a LAN, or in the cloud. Local translation keeps both STT and translation processing on the same computer.
+- `backend/` — local server: streaming speech recognition, translation, model management and configuration
+- `gui/` — desktop app (PySide6)
+- `chrome-extension/` — tab capture, settings, background service worker, offscreen audio and the subtitle overlay
+- `docs/` — architecture, models, startup and UI behaviour
+- `scripts/` — helpers for running from source
 
-No translation model is loaded when translation is disabled. A managed local translation runtime starts on demand and is released after its final user disconnects.
-
-## Getting the application
-
-The [Releases page](https://github.com/xu-0306/live-subtitle/releases) provides:
-
-- A Windows x64 portable application.
-- A Chrome/Chromium extension package for manual loading through Developer mode.
-
-Release-specific installation steps, filenames, and known limitations are included with each Release.
-
-## Run from source
-
-Requirements:
-
-- Windows with Python 3.10 or newer
-- Chrome, Edge, or another compatible Chromium browser
-- PyTorch installed for the intended CUDA or CPU environment
-- Packages from `backend/requirements.txt` and `gui/requirements.txt`
-
-Create the environment:
-
-```powershell
-git clone https://github.com/xu-0306/live-subtitle.git
-Set-Location live-subtitle
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python --version
-python -m pip install --upgrade pip
-python -m pip install -r backend\requirements.txt
-python -m pip install -r gui\requirements.txt
-```
-
-Install the appropriate PyTorch build separately, then start the desktop application:
-
-```powershell
-.\Start-GUI.bat
-```
-
-Run only the environment check with:
-
-```powershell
-.\Start-GUI.bat --check
-```
-
-Load the `chrome-extension` directory as an unpacked extension from `chrome://extensions`.
-
-## Project structure
-
-- `backend/` — FastAPI server, streaming STT, translation, model management, and configuration
-- `gui/` — PySide6 desktop application
-- `chrome-extension/` — browser capture, settings, service worker, offscreen audio, and subtitle overlay
-- `docs/` — architecture, model, startup, and UI behavior documentation
-- `scripts/` — source startup helpers
+</details>
 
 ## Documentation
 
 - [Translation services and model selection](docs/TRANSLATION_SERVICES.md)
 - [Managed local translation](docs/LOCAL_TRANSLATION_MVP.md)
 - [Architecture diagram](docs/STT_TRANSLATION_ARCHITECTURE.md)
-- [GUI startup and packaging](docs/GUI_STARTUP.md)
-
-## Current status
-
-Live Subtitle is under active development. Recognition and translation quality depend on the selected models, language, source audio, and available hardware. A GPU is optional, but local inference speed can differ significantly between CPU and GPU configurations.
-
-The Chrome extension currently requires manual loading through Developer mode, and the Windows executable is not yet code-signed.
-
-## Credits
-
-- [WhisperLiveKit](https://github.com/QuentinFuxa/WhisperLiveKit) — streaming STT engine
+- [Desktop app startup and packaging](docs/GUI_STARTUP.md)
 
 ## Feedback
 
-Please [open a GitHub Issue](https://github.com/xu-0306/live-subtitle/issues) with your Windows version, selected STT model, translation choice, CPU/GPU environment, and relevant errors or logs.
+Please [open an issue](https://github.com/xu-0306/live-subtitle/issues) with your Windows version, speech model, translation choice, CPU/GPU, and any error messages or logs.
+
+## Credits and license
+
+- [WhisperLiveKit](https://github.com/QuentinFuxa/WhisperLiveKit) — streaming speech recognition engine.
+- [PySide6-Fluent-Widgets](https://pypi.org/project/PySide6-Fluent-Widgets/) — desktop app components (GPLv3), bundled in the Windows package.
+
+Live Subtitle is released under the [GNU General Public License v3.0](LICENSE). Other bundled third-party components keep their own licences.

@@ -1,0 +1,5 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Live Subtitle demo</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{position:absolute;inset:0;width:100%;height:100%;border:0}</style></head>
+<body><iframe id="v" allow="autoplay; encrypted-media" title="video"></iframe>
+<script>window.startVideo=(id,start)=>{document.getElementById('v').src=`https://www.youtube-nocookie.com/embed/${id}?autoplay=1&controls=0&rel=0&modestbranding=1&iv_load_policy=3&playsinline=1&start=${start}&enablejsapi=1&cc_load_policy=0&origin=http://127.0.0.1:8800`; const f=document.getElementById('v'); const kill=()=>{f.contentWindow.postMessage(JSON.stringify({event:'command',func:'unloadModule',args:['captions']}),'*'); f.contentWindow.postMessage(JSON.stringify({event:'command',func:'unloadModule',args:['cc']}),'*');}; f.onload=()=>{f.contentWindow.postMessage(JSON.stringify({event:'listening'}),'*'); [500,1500,3000,5000,8000].forEach(t=>setTimeout(kill,t));};};</script>
+</body></html>
