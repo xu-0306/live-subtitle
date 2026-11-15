@@ -19,7 +19,7 @@ from qfluentwidgets import (
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from gui import config_manager
+from gui import config_manager, fluent_kit
 from gui.backend_runner import BackendRunner
 from gui.download_worker import ModelDownloadWorker
 from gui.local_model_controller import LocalModelController
@@ -196,8 +196,12 @@ class MainWindow(FluentWindow):
         QtWidgets.QApplication.setFont(QtGui.QFont(self._ui_font_family, 10))
         setThemeColor("#2f76e8")  # the app's original brand blue (Fluent defaults to teal)
         setTheme(self.THEMES[self._theme_mode()])
-        if QtGui.QGuiApplication.platformName() == "offscreen":
-            self.setMicaEffectEnabled(False)
+        # Mica shows the wallpaper only while the window is active, so the look flipped whenever a
+        # dialog took focus; a solid Fluent background is the same in every window state.
+        self.setMicaEffectEnabled(False)
+        # setTheme() above already started the background fade towards "transparent" (Mica was
+        # still on); retarget it, or it lands after this and leaves the window see-through.
+        self._updateBackgroundColor()
 
         self._build_ui()
         protect_wheel_controls(self)
@@ -762,7 +766,7 @@ class MainWindow(FluentWindow):
             return True
         names = self.page_names[page] if page is not None else ", ".join(
             self.page_names[i] for i in sorted(self._dirty_pages))
-        answer = QtWidgets.QMessageBox.question(
+        answer = fluent_kit.ask(
             self, "Unsaved settings", f"Save changes to {names} before continuing?",
             QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
             QtWidgets.QMessageBox.Cancel,
@@ -982,14 +986,8 @@ class MainWindow(FluentWindow):
         layout.addWidget(close_btn)
         dialog.exec()
 
-    def _reapply_mica(self) -> None:
-        # Qt resets the DWM backdrop when the application palette changes, so the Mica
-        # light/dark choice that Fluent just applied is lost; re-assert it for the live theme.
-        if self.isVisible() and self.isMicaEffectEnabled():
-            self.windowEffect.setMicaEffect(self.winId(), isDarkTheme())
-
     def _update_status_palette(self) -> None:
-        # Plain Qt widgets (labels, list views, QMessageBox) read the application palette,
+        # Plain Qt widgets (labels, list views) read the application palette,
         # which Fluent does not touch, so keep it in step with the Fluent theme. The flag
         # stops our own palette change from re-triggering the system-theme refresh in event().
         self._palette_syncing = True
@@ -997,8 +995,6 @@ class MainWindow(FluentWindow):
             QtWidgets.QApplication.setPalette(_fluent_palette(isDarkTheme()))
         finally:
             self._palette_syncing = False
-        self._reapply_mica()
-        QtCore.QTimer.singleShot(0, self._reapply_mica)  # Qt may apply the palette change late
         palette = self.status_bar.palette()
         palette.setColor(QtGui.QPalette.Window, QtGui.QColor(32, 32, 32) if isDarkTheme()
                          else QtGui.QColor(240, 244, 249))
@@ -1228,14 +1224,14 @@ class MainWindow(FluentWindow):
         if target_path.exists():
             return True
         if not is_standard:
-            QtWidgets.QMessageBox.warning(
+            fluent_kit.ask(
                 self,
                 "Model missing",
                 "Selected model file was not found in the directory.",
             )
             self._set_status("Model missing", "error")
             return False
-        reply = QtWidgets.QMessageBox.question(
+        reply = fluent_kit.ask(
             self,
             "Model missing",
             f"{model_name}.pt was not found. Download it now?",
@@ -1424,7 +1420,7 @@ class MainWindow(FluentWindow):
             self._set_status("Model already present", "idle")
             return
         if model_name not in WHISPER_MODEL_URLS:
-            QtWidgets.QMessageBox.warning(
+            fluent_kit.ask(
                 self,
                 "Model download unavailable",
                 "Selected model is custom and has no download URL.",
@@ -1595,7 +1591,7 @@ class MainWindow(FluentWindow):
         name = self.page_names[page]
         message = (f"Discard the {name} draft and restore saved services? Saved services will be kept."
                    if page == 5 else f"Reset {name} fields to defaults? Review them, then Save page to keep them.")
-        answer = QtWidgets.QMessageBox.question(
+        answer = fluent_kit.ask(
             self, f"Reset {name}", message,
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
             QtWidgets.QMessageBox.Cancel,

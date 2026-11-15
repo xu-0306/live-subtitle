@@ -11,14 +11,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6 import QtCore, QtGui, QtWidgets
 from qfluentwidgets import TitleLabel
 
-from gui import config_manager
+from gui import config_manager, fluent_kit
 from gui.app import MainWindow
 from backend import config as backend_config, config_store
 
 
 @pytest.fixture(autouse=True)
 def _answer_settings_prompts(monkeypatch):
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda _parent, title, *_args:
+    monkeypatch.setattr(fluent_kit, "ask", lambda _parent, title, *_args:
                         QtWidgets.QMessageBox.Yes if title.startswith("Change service") else QtWidgets.QMessageBox.Discard)
 
 

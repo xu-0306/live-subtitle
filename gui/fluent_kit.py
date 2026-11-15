@@ -9,9 +9,67 @@ from __future__ import annotations
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, ComboBox, EditableComboBox, FluentIcon, ProgressBar,
-    SimpleCardWidget, StrongBodyLabel, TransparentPushButton, isDarkTheme,
+    BodyLabel, CaptionLabel, ComboBox, EditableComboBox, FluentIcon, MessageBoxBase,
+    PrimaryPushButton, ProgressBar, PushButton, SimpleCardWidget, StrongBodyLabel,
+    TransparentPushButton, isDarkTheme,
 )
+
+_SB = QtWidgets.QMessageBox.StandardButton
+# Display order: affirmative first, Cancel last (Fluent dialogs read left to right).
+_BUTTON_ORDER = (
+    (_SB.Save, "Save"), (_SB.Yes, "Yes"), (_SB.Ok, "OK"),
+    (_SB.Discard, "Discard"), (_SB.No, "No"), (_SB.Cancel, "Cancel"),
+)
+
+
+class _AskDialog(MessageBoxBase):
+    def __init__(self, parent: QtWidgets.QWidget, title: str, text: str,
+                 buttons: _SB, default: _SB | None) -> None:
+        super().__init__(parent)
+        self.chosen = _SB.NoButton
+        shown = [(b, label) for b, label in _BUTTON_ORDER if buttons & b]
+        flags = [b for b, _ in shown]
+        # Escape / close must never mean "go ahead": Cancel, else No, else the only button.
+        self.reject_value = next((b for b in (_SB.Cancel, _SB.No) if b in flags), flags[0])
+        default = default if default in flags else flags[0]
+
+        self.viewLayout.addWidget(StrongBodyLabel(title))
+        body = BodyLabel(text)
+        body.setWordWrap(True)
+        self.viewLayout.addWidget(body)
+        self.widget.setMinimumWidth(380)
+
+        for old in (self.yesButton, self.cancelButton):
+            self.buttonLayout.removeWidget(old)
+            old.deleteLater()
+        for button, label in shown:
+            # Only a non-destructive default gets the accent colour.
+            primary = button == default and button != _SB.Discard
+            widget = (PrimaryPushButton if primary else PushButton)(label, self.buttonGroup)
+            widget.clicked.connect(lambda _=False, b=button: self._choose(b))
+            self.buttonLayout.addWidget(widget, 1, Qt.AlignVCenter)
+            if button == default:
+                widget.setDefault(True)
+                widget.setFocus()
+
+    def _choose(self, button: _SB) -> None:
+        self.chosen = button
+        self.accept()
+
+    def reject(self) -> None:
+        self.chosen = self.reject_value
+        super().reject()
+
+
+def ask(parent: QtWidgets.QWidget, title: str, text: str,
+        buttons: _SB = _SB.Ok, default: _SB | None = None) -> _SB:
+    """Fluent stand-in for ``QMessageBox.question/warning``; returns the same ``StandardButton``.
+
+    ``default`` (first button if omitted) takes focus; Escape returns Cancel, else No.
+    """
+    dialog = _AskDialog(parent.window(), title, text, buttons, default)
+    dialog.exec()
+    return dialog.chosen
 
 
 def make_card(title: str = "") -> SimpleCardWidget:

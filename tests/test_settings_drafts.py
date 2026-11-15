@@ -13,7 +13,7 @@ from PySide6 import QtCore, QtGui, QtWidgets, QtWebSockets
 from qfluentwidgets import SpinBox
 
 from backend import config_store
-from gui import config_manager
+from gui import config_manager, fluent_kit
 from gui.app import MainWindow
 from gui.wheel_guard import protect_wheel_controls
 
@@ -25,7 +25,7 @@ def _nav(window, key):
 @pytest.fixture
 def window(tmp_path, monkeypatch):
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: QtWidgets.QMessageBox.Discard)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Discard)
     cfg = config_manager.load_default_config()
     cfg["models"] = {"root": str(tmp_path / "models")}
     cfg["translation"]["service_profiles"] = [
@@ -81,7 +81,7 @@ def test_service_draft_save_discard_and_draft_test(window):
 def test_switch_service_guards_draft(window, monkeypatch, answer):
     catalog = window.service_catalog
     catalog.name_input.setText("Pending")
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: answer)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: answer)
     catalog.profile_list.setCurrentRow(1)
     assert catalog.profile_list.currentRow() == (0 if answer == QtWidgets.QMessageBox.Cancel else 1)
     saved = config_store.load_snapshot(window.config_path)[0]["translation"]["service_profiles"]
@@ -90,10 +90,10 @@ def test_switch_service_guards_draft(window, monkeypatch, answer):
 
 def test_type_change_has_new_id_and_clears_provider_fields(window, monkeypatch):
     catalog = window.service_catalog
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: QtWidgets.QMessageBox.Cancel)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Cancel)
     catalog.kind_combo.setCurrentIndex(catalog.kind_combo.findData("ollama"))
     assert catalog.kind_combo.currentData() == "api"
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: QtWidgets.QMessageBox.Yes)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Yes)
     catalog.default_check.setChecked(True)
     catalog.kind_combo.setCurrentIndex(catalog.kind_combo.findData("nllb"))
     identity = catalog.id_input.text()
@@ -129,7 +129,7 @@ def test_close_dirty_prompt(window, monkeypatch, answer):
     def respond(_parent, title, message, *_args):
         prompts.append((title, message))
         return answer
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", respond)
+    monkeypatch.setattr(fluent_kit, "ask", respond)
     event = QtGui.QCloseEvent()
     window.closeEvent(event)
     assert "Server" in prompts[0][1]
@@ -143,12 +143,12 @@ def test_close_dirty_prompt(window, monkeypatch, answer):
 
 def test_sidebar_cancel_and_discard(window, monkeypatch):
     window.host_input.setText("127.0.0.2")
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: QtWidgets.QMessageBox.Cancel)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Cancel)
     _nav(window, "services").click()
     assert window.tabs.currentIndex() == 0
     assert _nav(window, "server").isSelected
     assert not _nav(window, "services").isSelected
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: QtWidgets.QMessageBox.Discard)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Discard)
     _nav(window, "services").click()
     assert window.tabs.currentIndex() == 5
     assert window.host_input.text() == window.config["server"]["host"]
@@ -158,10 +158,10 @@ def test_sidebar_guards_theme_preview_from_header(window, monkeypatch):
     original = window._theme_mode()
     window._set_theme_mode("dark" if original != "dark" else "light")
     assert window._dirty_pages == {4}
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: QtWidgets.QMessageBox.Cancel)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Cancel)
     _nav(window, "services").click()
     assert window.tabs.currentIndex() == 0
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: QtWidgets.QMessageBox.Discard)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Discard)
     _nav(window, "services").click()
     assert window.tabs.currentIndex() == 5
     assert window._theme_mode() == original
@@ -187,7 +187,7 @@ def test_reset_is_page_scoped_and_keeps_saved_services(window, monkeypatch, page
     window.subtitle_max_chars_input.setValue(999)
     window.host_input.setText("127.0.0.2")
     messages = []
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda _parent, _title, message, *_args:
+    monkeypatch.setattr(fluent_kit, "ask", lambda _parent, _title, message, *_args:
                         messages.append(message) or QtWidgets.QMessageBox.Yes)
     window._reset_defaults()
     assert window.tabs.tabText(page) in messages[-1]
@@ -213,7 +213,7 @@ def test_draft_test_sends_current_profile_without_saving(window, monkeypatch, ok
     def forbidden(*_args):
         pytest.fail("Testing a draft must never prompt or save")
     monkeypatch.setattr(window, "_save_service", forbidden)
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", forbidden)
+    monkeypatch.setattr(fluent_kit, "ask", forbidden)
     messages = []
     monkeypatch.setattr(QtWebSockets.QWebSocket, "open", lambda *_args: None)
     monkeypatch.setattr(QtWebSockets.QWebSocket, "sendTextMessage",
@@ -258,7 +258,7 @@ def test_backend_start_cancel_does_not_publish_drafts(window, monkeypatch):
     window.service_catalog.model_input.setText("draft")
     before = config_store.load_snapshot(window.config_path)[0]
     monkeypatch.setattr(window, "_validate_server_settings", lambda: True)
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: QtWidgets.QMessageBox.Cancel)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Cancel)
     window._start_backend()
     assert window.backend_runner is None
     assert config_store.load_snapshot(window.config_path)[0] == before

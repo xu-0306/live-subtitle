@@ -5,14 +5,14 @@ import pytest
 from PySide6 import QtCore, QtGui, QtWidgets, QtTest
 from qfluentwidgets import FluentWindow, InfoBar, ScrollArea, Theme, TitleLabel, qconfig
 
-from gui import config_manager
+from gui import config_manager, fluent_kit
 from gui.app import MainWindow
 
 
 @pytest.fixture
 def window(tmp_path, monkeypatch):
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_: QtWidgets.QMessageBox.Discard)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_: QtWidgets.QMessageBox.Discard)
     cfg = config_manager.load_default_config()
     cfg["models"] = {"root": str(tmp_path / "models")}
     path = tmp_path / "config.yaml"
@@ -62,7 +62,7 @@ def test_fluent_navigation_guards_dirty_server(window, monkeypatch, answer):
     original = window.host_input.text()
     window.host_input.setText("127.0.0.2")
     assert window._dirty_pages == {0}
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_: answer)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_: answer)
     window.navigationInterface.widget("services").click()
     cancelled = answer == QtWidgets.QMessageBox.Cancel
     assert window._current_page == (0 if cancelled else 5)
@@ -134,3 +134,22 @@ def test_titlebar_close_runs_existing_shutdown_order(window, monkeypatch):
     window.titleBar.closeBtn.click()
     assert calls == ["resolve", "service", "local", "stop", ("wait", 6000), "quit"]
     window._service_test_socket = None
+
+
+@pytest.mark.parametrize("theme,rgb", [("light", (240, 244, 249)), ("dark", (32, 32, 32))])
+def test_window_background_is_solid_not_mica(tmp_path, theme, rgb):
+    """Mica showed the wallpaper only while active; the solid fill must also survive the startup fade."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    cfg = config_manager.load_default_config()
+    cfg["models"] = {"root": str(tmp_path / "models")}
+    cfg.setdefault("gui", {})["theme"] = theme
+    path = tmp_path / "config.yaml"
+    config_manager.write_config(path, cfg)
+    win = MainWindow(path, auto_start=False, setup_tray=False)
+    try:
+        QtTest.QTest.qWait(300)  # Fluent's 120 ms background fade must have finished
+        assert not win.isMicaEffectEnabled()
+        assert win.backgroundColor.getRgb() == (*rgb, 255)
+    finally:
+        win.close()
+        app.processEvents()

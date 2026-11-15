@@ -19,6 +19,7 @@ from qfluentwidgets import (
     PrimaryPushButton, PushButton, StrongBodyLabel, TogglePushButton,
 )
 
+from gui import fluent_kit
 from gui.fluent_kit import FreeTextComboBox, disclosure_button, make_card, muted_label
 
 
@@ -509,7 +510,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
     def _guard_draft(self) -> bool:
         if not self.has_unsaved_changes():
             return True
-        answer = QtWidgets.QMessageBox.question(
+        answer = fluent_kit.ask(
             self, "Unsaved service", "Save changes to this service before continuing?",
             QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
             QtWidgets.QMessageBox.Cancel,
@@ -660,7 +661,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         if kind == self._draft.get("kind"):
             return
         if self._profiles[self._active_index]["id"] in {p["id"] for p in self._saved_profiles}:
-            answer = QtWidgets.QMessageBox.question(
+            answer = fluent_kit.ask(
                 self, "Change service type",
                 "Changing Type creates a new service ID and clears connection fields. Continue?",
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
