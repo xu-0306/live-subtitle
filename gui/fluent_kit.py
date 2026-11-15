@@ -6,12 +6,15 @@ here once instead of in every module.
 """
 from __future__ import annotations
 
+from functools import partial
+from typing import Callable, Sequence
+
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, ComboBox, EditableComboBox, FluentIcon, MessageBoxBase,
     PrimaryPushButton, ProgressBar, PushButton, SimpleCardWidget, StrongBodyLabel,
-    TransparentPushButton, isDarkTheme,
+    ToolTipFilter, TransparentPushButton, isDarkTheme,
 )
 
 _SB = QtWidgets.QMessageBox.StandardButton
@@ -22,7 +25,34 @@ _BUTTON_ORDER = (
 )
 
 
-class _AskDialog(MessageBoxBase):
+class FluentDialog(MessageBoxBase):
+    """Overlay dialog: a mask over ``parent.window()``, no native title bar, caller-chosen buttons.
+
+    Put content in ``viewLayout``. ``parent`` must be a widget of the window to cover (the mask
+    is sized from it); ``exec()`` returns the usual ``QDialog`` code, Escape rejects.
+    """
+
+    def set_buttons(self, specs: Sequence[tuple[str, bool, Callable[[], None]]]
+                    ) -> dict[str, QtWidgets.QPushButton]:
+        """Replace the stock OK/Cancel pair. ``specs`` are ``(label, accent, on_click)``, left to right."""
+        for old in (self.yesButton, self.cancelButton):
+            self.buttonLayout.removeWidget(old)
+            # deleteLater() alone is not enough: exec() runs a nested event loop that never
+            # processes a delete queued outside it, so the stock button stayed painted (a stray
+            # "Cancel" at the corner of the button bar).
+            old.hide()
+            old.setParent(None)
+            old.deleteLater()
+        buttons: dict[str, QtWidgets.QPushButton] = {}
+        for label, accent, action in specs:
+            widget = (PrimaryPushButton if accent else PushButton)(label, self.buttonGroup)
+            widget.clicked.connect(lambda _=False, act=action: act())
+            self.buttonLayout.addWidget(widget, 1, Qt.AlignVCenter)
+            buttons[label] = widget
+        return buttons
+
+
+class _AskDialog(FluentDialog):
     def __init__(self, parent: QtWidgets.QWidget, title: str, text: str,
                  buttons: _SB, default: _SB | None) -> None:
         super().__init__(parent)
@@ -39,18 +69,13 @@ class _AskDialog(MessageBoxBase):
         self.viewLayout.addWidget(body)
         self.widget.setMinimumWidth(380)
 
-        for old in (self.yesButton, self.cancelButton):
-            self.buttonLayout.removeWidget(old)
-            old.deleteLater()
-        for button, label in shown:
-            # Only a non-destructive default gets the accent colour.
-            primary = button == default and button != _SB.Discard
-            widget = (PrimaryPushButton if primary else PushButton)(label, self.buttonGroup)
-            widget.clicked.connect(lambda _=False, b=button: self._choose(b))
-            self.buttonLayout.addWidget(widget, 1, Qt.AlignVCenter)
-            if button == default:
-                widget.setDefault(True)
-                widget.setFocus()
+        # Only a non-destructive default gets the accent colour.
+        widgets = self.set_buttons([
+            (label, button == default and button != _SB.Discard, partial(self._choose, button))
+            for button, label in shown])
+        focus = widgets[dict(shown)[default]]
+        focus.setDefault(True)
+        focus.setFocus()
 
     def _choose(self, button: _SB) -> None:
         self.chosen = button
@@ -92,6 +117,20 @@ def muted_label(text: str = "", *, small: bool = False) -> QtWidgets.QLabel:
     label.setObjectName("mutedText")
     label.setWordWrap(True)
     return label
+
+
+def set_tip(text: str, *widgets: QtWidgets.QWidget) -> None:
+    """Fluent hover tip on each widget. The Fluent tip does not wrap, so break lines in ``text``."""
+    for widget in widgets:
+        widget.setToolTip(text)
+        widget.installEventFilter(ToolTipFilter(widget, showDelay=350))
+
+
+def tip_row(form: QtWidgets.QFormLayout, label: str, field: QtWidgets.QWidget, text: str) -> None:
+    """``form.addRow(label, field)`` with the same hover tip on the label and the field."""
+    caption = QtWidgets.QLabel(label)
+    set_tip(text, caption, field)
+    form.addRow(caption, field)
 
 
 def disclosure_button(text: str, target: QtWidgets.QWidget) -> TransparentPushButton:

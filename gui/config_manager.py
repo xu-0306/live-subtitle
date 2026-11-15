@@ -42,12 +42,6 @@ def get_user_config_path() -> Path:
     return get_app_dir() / "config.yaml"
 
 
-def get_default_model_dir() -> Path:
-    path = get_app_dir() / SPEECH_MODELS_DIR_NAME
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def get_default_model_storage_dir() -> Path:
     """Return the shared root for speech and local-translation assets."""
 

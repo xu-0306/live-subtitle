@@ -123,6 +123,19 @@ def test_ask_escape_never_means_go_ahead(buttons, expected) -> None:
     assert result == expected
 
 
+def test_ask_leaves_no_stock_button_behind() -> None:
+    """The stock Yes/Cancel buttons were only deleteLater()'d, so one stayed painted over the bar."""
+    _application()
+    parent = QtWidgets.QWidget()
+    dialog = _AskDialog(parent, "Title", "Body", SB.Yes | SB.Cancel, SB.Cancel)
+    layout = dialog.buttonLayout
+    in_layout = [layout.itemAt(i).widget() for i in range(layout.count())]
+    stray = [b.text() for b in dialog.findChildren(QtWidgets.QAbstractButton)
+             if not b.isHidden() and b not in in_layout]
+    assert stray == []
+    assert [b.text() for b in in_layout] == ["Yes", "Cancel"]
+
+
 def test_ask_defaults_to_first_button_when_none_given() -> None:
     result, seen = _run_ask(lambda _d, b: b["Yes"].click(), SB.Yes | SB.No)
     assert result == SB.Yes

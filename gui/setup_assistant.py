@@ -6,10 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from PySide6 import QtCore, QtWidgets
-from qfluentwidgets import (
-    BodyLabel, CaptionLabel, ComboBox, FluentStyleSheet, PrimaryPushButton,
-    PushButton, SubtitleLabel,
-)
+from qfluentwidgets import BodyLabel, CaptionLabel, ComboBox, SubtitleLabel
 
 from backend.local_catalog import get_model
 from backend.local_runtime import (
@@ -17,7 +14,7 @@ from backend.local_runtime import (
     SHARED_VRAM_HEADROOM_MB,
     STT_VRAM_RESERVE_MB,
 )
-from gui.fluent_kit import make_card
+from gui.fluent_kit import FluentDialog, make_card
 
 
 SETUP_ASSISTANT_VERSION = 1
@@ -209,26 +206,20 @@ def mark_setup_assistant_seen(config: Mapping[str, Any]) -> dict[str, Any]:
     return updated
 
 
-class SetupAssistantDialog(QtWidgets.QDialog):
+class SetupAssistantDialog(FluentDialog):
     """Small, repeatable setup surface rather than a one-way wizard."""
 
     def __init__(
         self,
         hardware: Hardware,
         recommendations: Sequence[ModelRecommendation],
-        parent: QtWidgets.QWidget | None = None,
+        parent: QtWidgets.QWidget,
     ) -> None:
         super().__init__(parent)
-        # Themed dialog background that follows light/dark without relying on the app palette.
-        FluentStyleSheet.DIALOG.apply(self)
-        self.setWindowTitle("Recommended model setup")
-        self.setModal(True)
-        self.setMinimumWidth(560)
+        self.widget.setMinimumWidth(560)
         self._recommendations = list(recommendations)
 
-        root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root = self.viewLayout
         title = SubtitleLabel("Choose a model pair for this computer")
         title.setObjectName("pageTitle")
         intro = BodyLabel(
@@ -280,16 +271,9 @@ class SetupAssistantDialog(QtWidgets.QDialog):
         note.setWordWrap(True)
         root.addWidget(note)
 
-        self.apply_button = PrimaryPushButton("Use this setup")
+        buttons = self.set_buttons([("Not now", False, self.reject), ("Use this setup", True, self.accept)])
+        self.skip_button, self.apply_button = buttons["Not now"], buttons["Use this setup"]
         self.apply_button.setDefault(True)
-        self.skip_button = PushButton("Not now")
-        self.apply_button.clicked.connect(self.accept)
-        self.skip_button.clicked.connect(self.reject)
-        buttons = QtWidgets.QHBoxLayout()
-        buttons.addStretch(1)
-        buttons.addWidget(self.skip_button)
-        buttons.addWidget(self.apply_button)
-        root.addLayout(buttons)
 
         self.choice.currentIndexChanged.connect(self._refresh_summary)
         self._refresh_summary()

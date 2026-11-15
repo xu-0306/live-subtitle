@@ -53,7 +53,7 @@ def test_service_draft_save_discard_and_draft_test(window):
     assert catalog._profiles[0]["name"] == "Office"
     assert catalog.profile_list.item(0).text() == saved_row + " · Unsaved"
     assert catalog.editor_status.text() == "Unsaved changes"
-    assert "Translation services" not in window.dirty_label.text()
+    assert window.dirty_label.text() == "Unsaved: Translation services"
     assert window._dirty and window._dirty_pages == {5}
     assert config_store.load_snapshot(window.config_path)[0] == before_disk
     requested = []
@@ -141,30 +141,35 @@ def test_close_dirty_prompt(window, monkeypatch, answer):
         assert window._dirty
 
 
-def test_sidebar_cancel_and_discard(window, monkeypatch):
-    window.host_input.setText("127.0.0.2")
-    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Cancel)
-    _nav(window, "services").click()
-    assert window.tabs.currentIndex() == 0
-    assert _nav(window, "server").isSelected
-    assert not _nav(window, "services").isSelected
-    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Discard)
-    _nav(window, "services").click()
-    assert window.tabs.currentIndex() == 5
-    assert window.host_input.text() == window.config["server"]["host"]
-
-
-def test_sidebar_guards_theme_preview_from_header(window, monkeypatch):
+def test_theme_preview_survives_page_switch_and_discard_reverts_it(window, monkeypatch):
     original = window._theme_mode()
     window._set_theme_mode("dark" if original != "dark" else "light")
     assert window._dirty_pages == {4}
-    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Cancel)
-    _nav(window, "services").click()
-    assert window.tabs.currentIndex() == 0
-    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Discard)
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: pytest.fail("Moving between pages must never prompt"))
     _nav(window, "services").click()
     assert window.tabs.currentIndex() == 5
+    assert window._dirty_pages == {4}
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Discard)
+    assert window._resolve_unsaved_changes()
     assert window._theme_mode() == original
+    assert not window._dirty
+
+
+def test_save_all_writes_every_page_in_one_click(window):
+    window.host_input.setText("127.0.0.2")
+    window.subtitle_max_chars_input.setValue(321)
+    window.service_catalog.model_input.setText("all-model")
+    assert window._dirty_pages == {0, 3, 5}
+    assert window.dirty_label.text() == "Unsaved: Server, Tuning, Translation services"
+    window.tabs.setCurrentIndex(3)
+    assert not window.save_btn.isHidden()
+    window.save_btn.click()
+    saved = config_store.load_snapshot(window.config_path)[0]
+    assert saved["server"]["host"] == "127.0.0.2"
+    assert saved["subtitle"]["max_chars"] == 321
+    assert saved["translation"]["service_profiles"][0]["model"] == "all-model"
+    assert not window._dirty and window.dirty_label.text() == ""
+    assert window.service_catalog.editor_status.text() == "Saved"
 
 
 def test_new_service_discard_restores_empty_editor(window):
@@ -198,7 +203,6 @@ def test_reset_is_page_scoped_and_keeps_saved_services(window, monkeypatch, page
         assert window.subtitle_max_chars_input.value() == 999
     if page != 5:
         assert window.service_catalog.model_input.text() == "pending-service"
-    assert window._save_page(page)
     persisted = config_store.load_snapshot(window.config_path)[0]
     assert persisted["translation"]["service_profiles"] == saved["translation"]["service_profiles"]
 
@@ -233,12 +237,12 @@ def test_draft_test_sends_current_profile_without_saving(window, monkeypatch, ok
     assert window.service_catalog.editor_status.text() == "Unsaved changes"
 
 
-def test_service_actions_have_one_inline_status_and_no_page_save(window):
+def test_service_actions_have_one_inline_status_and_footer_save_all(window):
     window.tabs.setCurrentIndex(5)
     catalog = window.service_catalog
     assert catalog.save_btn.property("kind") != "secondary"
     assert catalog.discard_btn.property("kind") == catalog.test_btn.property("kind") == "secondary"
-    assert window.save_btn.isHidden()
+    assert not window.save_btn.isHidden() and window.save_btn.text() == "Save all"
     catalog.name_input.setText("Pending")
     assert catalog.editor_status.parent() is catalog.save_btn.parent()
     assert catalog.editor_status.objectName() == "mutedText"
@@ -246,9 +250,9 @@ def test_service_actions_have_one_inline_status_and_no_page_save(window):
                 if "Unsaved" in label.text()]
     assert statuses == ["Unsaved changes"]
     assert catalog.profile_list.item(0).text().endswith(" · Unsaved")
-    assert not window.dirty_label.text()
+    assert window.dirty_label.text() == "Unsaved: Translation services"
     window.host_input.setText("127.0.0.2")
-    assert window.dirty_label.text() == "Unsaved: Server"
+    assert window.dirty_label.text() == "Unsaved: Server, Translation services"
     catalog.discard_btn.click()
     window.tabs.setCurrentIndex(0)
     assert not window.save_btn.isHidden()

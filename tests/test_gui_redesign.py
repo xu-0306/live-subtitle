@@ -222,7 +222,7 @@ def test_translation_pages_explain_runtime_vs_service_profiles(tmp_path: Path) -
     window.close()
 
 
-def test_stt_page_save_preserves_other_form_edits(tmp_path: Path) -> None:
+def test_save_all_saves_edits_from_every_page(tmp_path: Path) -> None:
     from backend.translation_service import TranslationService
     _app()
     window = _window(tmp_path)
@@ -230,24 +230,24 @@ def test_stt_page_save_preserves_other_form_edits(tmp_path: Path) -> None:
     window.host_input.setText('127.0.0.2')
     window.model_select_combo.setCurrentIndex(window.model_select_combo.findData('small'))
     assert config_store.load_snapshot(window.config_path)[0]['stt']['model'] == before['stt']['model']
-    assert window._save_page(2)
+    window._save_defaults()
     saved, _ = config_store.load_snapshot(window.config_path)
     assert saved['stt']['model'] == 'small'
-    assert saved['server'] == before['server']
-    assert window._dirty
+    assert saved['server']['host'] == '127.0.0.2'
+    assert not window._dirty
     service = TranslationService(lambda: config_store.load_snapshot(window.config_path)[0], tmp_path)
     assert service.desktop_catalog()['defaults']['stt']['model'] == 'small'
     window.close()
 
 
-def test_stt_page_save_preserves_external_revision_on_conflict(tmp_path: Path) -> None:
+def test_save_all_preserves_external_revision_on_conflict(tmp_path: Path) -> None:
     _app()
     window = _window(tmp_path)
     external, revision = config_store.load_snapshot(window.config_path)
     external['stt']['model'] = 'base'
     config_store.save_config(window.config_path, external, expected_revision=revision)
     window.model_select_combo.setCurrentIndex(window.model_select_combo.findData('tiny'))
-    assert not window._save_page(2)
+    assert not window._save_config_to_disk()
     assert config_store.load_snapshot(window.config_path)[0]['stt']['model'] == 'base'
     assert window._dirty
     assert 'Could not save' in window.status_bar.currentMessage()
@@ -262,7 +262,7 @@ def test_theme_preference_is_saved_and_service_catalog_preserves_kinds(tmp_path:
     assert "NLLB" in window.service_catalog.profile_list.item(1).text()
 
     window._set_theme_mode("dark", persist=True)
-    assert window._save_page(4)
+    assert window._save_config_to_disk()
     assert config_manager.load_config(window.config_path)["gui"]["theme"] == "dark"
     window.service_catalog.profile_list.setCurrentRow(0)
     window.service_catalog.model_input.setText("gemma3:12b")
@@ -390,7 +390,6 @@ def test_ollama_gui_connection_test_requests_draft_translation(tmp_path: Path, m
     try:
         window.backend_runner = SimpleNamespace(isRunning=lambda: True)
         window.server_status.setText("Ready")
-        window._dirty = False
         window._test_translation_profile({"id": "ollama-imported", "kind": "ollama"})
         window._service_test_socket.connected.emit()
         assert messages[0]["action"] == "translate"

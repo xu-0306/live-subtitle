@@ -76,6 +76,21 @@ def _fluent_palette(dark: bool) -> QtGui.QPalette:
     return palette
 
 
+class LogsDialog(fluent_kit.FluentDialog):
+    """Read-only view of the captured backend output."""
+
+    def __init__(self, parent: QtWidgets.QWidget, text: str) -> None:
+        super().__init__(parent)
+        self.widget.setMinimumWidth(720)
+        self.viewLayout.addWidget(StrongBodyLabel("Backend logs"))
+        self.output = PlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setPlainText(text)
+        self.output.setMinimumHeight(300)
+        self.viewLayout.addWidget(self.output)
+        self.set_buttons([("Close", True, self.accept)])
+
+
 class _PageIndexView:
     """Legacy page-index view (the old QTabWidget API) over the Fluent page stack."""
 
@@ -156,7 +171,6 @@ class MainWindow(FluentWindow):
         self.backend_runner: Optional[BackendRunner] = None
         self.download_worker: Optional[ModelDownloadWorker] = None
         self.tray: Optional[QtWidgets.QSystemTrayIcon] = None
-        self.pending_start = False
         self.restart_pending = False
         self.force_close = False
         self.backend_failed = False
@@ -165,7 +179,6 @@ class MainWindow(FluentWindow):
         self._service_test_timer: Optional[QtCore.QTimer] = None
         self._service_test_result_received = False
         self._loading_ui = False
-        self._dirty = False
         self._dirty_pages: set[int] = set()
         self._current_page = 0
         gui_config = self.config.get("gui") if isinstance(self.config.get("gui"), dict) else {}
@@ -297,15 +310,21 @@ class MainWindow(FluentWindow):
         layout.addWidget(self.stackedWidget, 1)
         footer = QtWidgets.QHBoxLayout()
         footer.setContentsMargins(24, 8, 24, 8)
+        # Both notes share one left column. Side by side, each got ~150 px and the
+        # "Unsaved: Server, Local translation, ..." list wrapped onto two lines.
+        notes = QtWidgets.QVBoxLayout()
+        notes.setSpacing(2)
         self.dirty_label = CaptionLabel("")
         self.dirty_label.setWordWrap(True)
-        footer.addWidget(self.dirty_label)
-        footer.addStretch(1)
+        # An empty label would collapse and make the footer jump when a page becomes dirty.
+        self.dirty_label.setMinimumHeight(self.dirty_label.fontMetrics().lineSpacing())
+        notes.addWidget(self.dirty_label)
         self.restart_notice = CaptionLabel("")
         self.restart_notice.setWordWrap(True)
-        footer.addWidget(self.restart_notice, 1)
-        self.reset_btn = PushButton("Reset")
-        self.save_btn = PrimaryPushButton("Save page")
+        notes.addWidget(self.restart_notice)
+        footer.addLayout(notes, 1)
+        self.reset_btn = PushButton("Reset page")
+        self.save_btn = PrimaryPushButton("Save all")
         footer.addWidget(self.reset_btn)
         footer.addWidget(self.save_btn)
         layout.addLayout(footer)
@@ -513,14 +532,32 @@ class MainWindow(FluentWindow):
         self.subtitle_history_lines_input.setRange(1, 4)
         self.subtitle_history_lines_input.setValue(SUBTITLE_HISTORY_LINES_DEFAULT)
         self.subtitle_show_partial_check = CheckBox("Show partial line")
-        cleanup_form.addRow("Max chars", self.subtitle_max_chars_input)
-        cleanup_form.addRow(
-            "Max sentences (Latin)", self.subtitle_max_sentences_default_input
-        )
-        cleanup_form.addRow(
-            "Max sentences (CJK)", self.subtitle_max_sentences_cjk_input
-        )
-        cleanup_form.addRow("History lines", self.subtitle_history_lines_input)
+        fluent_kit.tip_row(
+            cleanup_form, "Max chars", self.subtitle_max_chars_input,
+            "Longest subtitle line kept on screen.\n"
+            "A longer line is cut from the start, so the\n"
+            "newest words stay.\n"
+            f"Example: at 100, a 150-character line shows\nonly its last 100.  (Default {SUBTITLE_MAX_CHARS_DEFAULT})")
+        fluent_kit.tip_row(
+            cleanup_form, "Max sentences (Latin)", self.subtitle_max_sentences_default_input,
+            "For a line over Max chars, keep only its last\n"
+            "N sentences (English, Spanish, French...).\n"
+            f"Example: 2 keeps the last two.  (Default {SUBTITLE_MAX_SENTENCES_DEFAULT})")
+        fluent_kit.tip_row(
+            cleanup_form, "Max sentences (CJK)", self.subtitle_max_sentences_cjk_input,
+            "Same rule for Chinese, Japanese and Korean,\n"
+            "where one sentence is already long.\n"
+            f"Example: 1 keeps only the last sentence.  (Default {SUBTITLE_MAX_SENTENCES_CJK})")
+        fluent_kit.tip_row(
+            cleanup_form, "History lines", self.subtitle_history_lines_input,
+            "How many finished lines stay on screen.\n"
+            "The line still being spoken is shown on top.\n"
+            f"Example: 2 shows the last two finished lines.  (Default {SUBTITLE_HISTORY_LINES_DEFAULT})")
+        fluent_kit.set_tip(
+            "Show a sentence while it is still being spoken.\n"
+            "It can change as more audio arrives.\n"
+            "Off: a line appears only when it is complete.",
+            self.subtitle_show_partial_check)
         cleanup_form.addRow("", self.subtitle_show_partial_check)
         cleanup_group.setObjectName("card")
         body.addWidget(cleanup_group)
@@ -534,13 +571,21 @@ class MainWindow(FluentWindow):
         self.stall_check_interval_input = SpinBox()
         self.stall_check_interval_input.setRange(0, 300)
         self.stall_check_interval_input.setValue(STALL_CHECK_INTERVAL_DEFAULT)
-        stability_form.addRow("Stall timeout (sec)", self.stall_timeout_input)
-        stability_form.addRow(
-            "Stall check interval (sec)", self.stall_check_interval_input
-        )
+        fluent_kit.tip_row(
+            stability_form, "Stall timeout (sec)", self.stall_timeout_input,
+            "Restart speech recognition if audio keeps\n"
+            "arriving but it produces no text for this long.\n"
+            "Example: 15 restarts it after 15 s of no output.\n"
+            f"0 turns the check off.  (Default {STALL_TIMEOUT_DEFAULT})")
+        fluent_kit.tip_row(
+            stability_form, "Stall check interval (sec)", self.stall_check_interval_input,
+            "How often the stall check runs.\n"
+            "Lower reacts sooner but checks more often.\n"
+            "Example: 5 checks every 5 seconds.\n"
+            f"0 turns the check off.  (Default {STALL_CHECK_INTERVAL_DEFAULT})")
         stability_group.setObjectName("card")
         body.addWidget(stability_group)
-        tuning_note = BodyLabel("Subtitle cleanup applies to new capture sessions. Saving does not restart an active session.")
+        tuning_note = BodyLabel("Hover a setting for a short explanation. Subtitle cleanup applies to new capture sessions. Saving does not restart an active session.")
         tuning_note.setObjectName("mutedText")
         tuning_note.setWordWrap(True)
         body.addWidget(tuning_note)
@@ -702,16 +747,10 @@ class MainWindow(FluentWindow):
             self.switchTo(self.pages[self.NAV_TO_TAB[self.NAV_ITEMS[index][1]]])
 
     def _on_page_changed(self, _index: int) -> None:
+        # Every page keeps its edits in live widgets, so moving between pages never needs a prompt;
+        # unsaved edits are resolved once, by Save all or when leaving (close, start, setup).
         index = next(i for i, page in self.pages.items()
                      if page is self.stackedWidget.currentWidget())
-        previous = self._current_page
-        pending_page = next(iter(self._dirty_pages)) if len(self._dirty_pages) == 1 else None
-        if index != previous and self._dirty and not self._resolve_unsaved_changes(pending_page):
-            self.stackedWidget.blockSignals(True)
-            self.switchTo(self.pages[previous])
-            self.stackedWidget.blockSignals(False)
-            self.navigationInterface.setCurrentItem(self.pages[previous].objectName())
-            return
         self._current_page = index
         label = self.page_names[index]
         notices = {
@@ -720,10 +759,9 @@ class MainWindow(FluentWindow):
             "STT models": "Defaults apply to the next capture.",
             "Tuning": "Applies to the next capture.",
             "Translation services": "Applies to the next capture.",
-            "Settings": "Theme previews now; Save page to keep it.",
+            "Settings": "Theme previews now; Save all to keep it.",
         }
         self.restart_notice.setText(notices.get(label, ""))
-        self.save_btn.setVisible(index in self.PAGE_FIELDS)
 
     def _mark_dirty(self, *_args: object) -> None:
         if self._loading_ui:
@@ -736,9 +774,12 @@ class MainWindow(FluentWindow):
         self._dirty_pages.add(page)
         self._update_dirty_indicator()
 
+    @property
+    def _dirty(self) -> bool:
+        return bool(self._dirty_pages)
+
     def _update_dirty_indicator(self) -> None:
-        self._dirty = bool(self._dirty_pages)
-        names = ", ".join(self.page_names[i] for i in sorted(self._dirty_pages) if i in self.PAGE_FIELDS)
+        names = ", ".join(self.page_names[i] for i in sorted(self._dirty_pages))
         self.dirty_label.setText(f"Unsaved: {names}" if names else "")
         self.dirty_label.setProperty("status", "warning" if names else "idle")
         self.dirty_label.style().unpolish(self.dirty_label)
@@ -755,29 +796,25 @@ class MainWindow(FluentWindow):
 
     def _save_service(self) -> bool:
         updated = self.service_catalog.collect_into_config(self.config)
-        if not self._save_config_to_disk(updated=updated, page=5):
+        if not self._save_config_to_disk(updated=updated, services_only=True):
             self.service_catalog.editor_status.setText("Unsaved · save failed")
             return False
         self._show_notice("Service saved · applies to the next capture")
         return True
 
-    def _resolve_unsaved_changes(self, page: int | None = None) -> bool:
+    def _resolve_unsaved_changes(self) -> bool:
         if not self._dirty:
             return True
-        names = self.page_names[page] if page is not None else ", ".join(
-            self.page_names[i] for i in sorted(self._dirty_pages))
+        names = ", ".join(self.page_names[i] for i in sorted(self._dirty_pages))
         answer = fluent_kit.ask(
             self, "Unsaved settings", f"Save changes to {names} before continuing?",
             QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
             QtWidgets.QMessageBox.Cancel,
         )
         if answer == QtWidgets.QMessageBox.Save:
-            return self._save_page(page) if page is not None else self._save_config_to_disk()
+            return self._save_config_to_disk()
         if answer == QtWidgets.QMessageBox.Discard:
-            self._load_config_into_ui(self.config, page=page)
-            if page is not None:
-                self._dirty_pages.discard(page)
-                self._update_dirty_indicator()
+            self._load_config_into_ui(self.config)
             return True
         return False
 
@@ -971,20 +1008,8 @@ class MainWindow(FluentWindow):
         self.service_catalog.editor_status.setText(("Test passed: " if ok else "Test failed: ") + message)
 
     def _show_logs_dialog(self) -> None:
-        dialog = QtWidgets.QDialog(self)
-        dialog.setPalette(self.status_bar.palette())
-        dialog.setWindowTitle("Backend logs")
-        dialog.resize(760, 420)
-        layout = QtWidgets.QVBoxLayout(dialog)
-        output = PlainTextEdit()
-        output.setReadOnly(True)
         lines = getattr(self, "_log_lines", [])
-        output.setPlainText("\n".join(lines) or "No backend output captured yet.")
-        layout.addWidget(output)
-        close_btn = PushButton("Close")
-        close_btn.clicked.connect(dialog.reject)
-        layout.addWidget(close_btn)
-        dialog.exec()
+        LogsDialog(self, "\n".join(lines) or "No backend output captured yet.").exec()
 
     def _update_status_palette(self) -> None:
         # Plain Qt widgets (labels, list views) read the application palette,
@@ -1209,40 +1234,10 @@ class MainWindow(FluentWindow):
         if ok:
             self.download_progress.setValue(100)
             self.download_label.setText("Download complete")
-            if self.pending_start:
-                self.pending_start = False
-                self._start_backend()
         else:
             self.download_label.setText(message or "Download failed")
             self._set_status("Download failed", "error")
-            self.pending_start = False
         self._update_buttons()
-
-    def _ensure_model_ready(self) -> bool:
-        target_path, model_name = self._resolve_model_target()
-        is_standard = model_name in WHISPER_MODEL_URLS
-        if target_path.exists():
-            return True
-        if not is_standard:
-            fluent_kit.ask(
-                self,
-                "Model missing",
-                "Selected model file was not found in the directory.",
-            )
-            self._set_status("Model missing", "error")
-            return False
-        reply = fluent_kit.ask(
-            self,
-            "Model missing",
-            f"{model_name}.pt was not found. Download it now?",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-        )
-        if reply != QtWidgets.QMessageBox.Yes:
-            self._set_status("Model missing", "error")
-            return False
-        self.pending_start = True
-        self._start_download(target_path, model_name)
-        return False
 
     def _on_runner_status(self, text: str) -> None:
         status_type = {
@@ -1489,7 +1484,7 @@ class MainWindow(FluentWindow):
         self.config_revision = None
         return config_manager.load_config(self.config_path)
 
-    def _save_config_to_disk(self, *, updated: Dict[str, Any] | None = None, page: int | None = None) -> bool:
+    def _save_config_to_disk(self, *, updated: Dict[str, Any] | None = None, services_only: bool = False) -> bool:
         if updated is None:
             updated = self._collect_config_from_ui()
         try:
@@ -1512,12 +1507,11 @@ class MainWindow(FluentWindow):
             self._show_notice(f"Could not save settings: {exc}", "error")
             return False
         self.config = updated
-        if page is None or page == 5:
-            self.service_catalog.mark_saved()
-        if page is None:
-            self._dirty_pages.clear()
+        self.service_catalog.mark_saved()
+        if services_only:
+            self._dirty_pages.discard(5)
         else:
-            self._dirty_pages.discard(page)
+            self._dirty_pages.clear()
         self._update_dirty_indicator()
         return True
 
@@ -1567,30 +1561,16 @@ class MainWindow(FluentWindow):
         4: {"models": ("root",), "stt": ("model_cache_dir",), "local_llama": ("root",), "gui": ("theme",)},
     }
 
-    def _save_page(self, page: int) -> bool:
-        if page == 5:
-            return self._save_service()
-        collected = self._collect_config_from_ui()
-        updated = copy.deepcopy(self.config)
-        for section, keys in self.PAGE_FIELDS[page].items():
-            target = updated.setdefault(section, {})
-            source = collected.get(section, {})
-            for key in keys:
-                if key in source:
-                    target[key] = copy.deepcopy(source[key])
-                else:
-                    target.pop(key, None)
-        return self._save_config_to_disk(updated=updated, page=page)
-
     def _save_defaults(self) -> None:
-        if self._save_page(self._current_page):
-            self.status_bar.showMessage("Page saved · new capture defaults are ready", 3000)
+        """Save all: every page's edits (and the open service draft) are written in one revision."""
+        if self._save_config_to_disk():
+            self.status_bar.showMessage("Settings saved · new capture defaults are ready", 3000)
 
     def _reset_defaults(self) -> None:
         page = self._current_page
         name = self.page_names[page]
         message = (f"Discard the {name} draft and restore saved services? Saved services will be kept."
-                   if page == 5 else f"Reset {name} fields to defaults? Review them, then Save page to keep them.")
+                   if page == 5 else f"Reset {name} fields to defaults? Review them, then Save all to keep them.")
         answer = fluent_kit.ask(
             self, f"Reset {name}", message,
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,

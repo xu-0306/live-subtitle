@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 
 import pytest
-from PySide6 import QtCore, QtGui, QtWidgets, QtTest
+from PySide6 import QtCore, QtWidgets, QtTest
 from qfluentwidgets import FluentWindow, InfoBar, ScrollArea, Theme, TitleLabel, qconfig
 
 from gui import config_manager, fluent_kit
@@ -56,22 +56,22 @@ def test_sidebar_is_narrow_and_status_text_clears_window_edge(window):
     assert window.height() - status_bottom >= 6  # descenders stay clear of the rounded window edge
 
 
-@pytest.mark.parametrize("answer", [QtWidgets.QMessageBox.Cancel, QtWidgets.QMessageBox.Discard,
-                                  QtWidgets.QMessageBox.Save])
-def test_fluent_navigation_guards_dirty_server(window, monkeypatch, answer):
+def test_fluent_navigation_never_prompts_for_dirty_pages(window, monkeypatch):
     original = window.host_input.text()
     window.host_input.setText("127.0.0.2")
     assert window._dirty_pages == {0}
-    monkeypatch.setattr(fluent_kit, "ask", lambda *_: answer)
+
+    def forbidden(*_args):
+        pytest.fail("Moving between pages must never prompt")
+    monkeypatch.setattr(fluent_kit, "ask", forbidden)
     window.navigationInterface.widget("services").click()
-    cancelled = answer == QtWidgets.QMessageBox.Cancel
-    assert window._current_page == (0 if cancelled else 5)
-    assert window.stackedWidget.currentWidget() is window.pages[window._current_page]
-    assert window.navigationInterface.widget("server" if cancelled else "services").isSelected
-    assert window.host_input.text() == (original if answer == QtWidgets.QMessageBox.Discard else "127.0.0.2")
-    saved = config_manager.load_config(window.config_path)
-    assert saved["server"]["host"] == ("127.0.0.2" if answer == QtWidgets.QMessageBox.Save else original)
-    assert window._dirty == cancelled
+    assert window._current_page == 5
+    assert window.stackedWidget.currentWidget() is window.pages[5]
+    assert window.navigationInterface.widget("services").isSelected
+    # The edit stays in the form, unsaved, until Save all / close / discard.
+    assert window.host_input.text() == "127.0.0.2"
+    assert config_manager.load_config(window.config_path)["server"]["host"] == original
+    assert window._dirty_pages == {0}
 
 
 @pytest.mark.parametrize("mode", ["light", "dark", "system"])
@@ -80,7 +80,8 @@ def test_theme_selector_dirties_settings_and_roundtrips(window, mode):
     window.theme_combo.setCurrentIndex(window.theme_combo.findData(mode))
     assert window._dirty_pages == {4}
     assert window._theme_mode() == mode
-    assert window._save_page(4)
+    window._save_defaults()
+    assert not window._dirty
     assert config_manager.load_config(window.config_path)["gui"]["theme"] == mode
     reopened = MainWindow(window.config_path, auto_start=False, setup_tray=False)
     try:
@@ -89,6 +90,23 @@ def test_theme_selector_dirties_settings_and_roundtrips(window, mode):
         assert not reopened._dirty
     finally:
         reopened.close()
+
+
+def test_tuning_settings_explain_themselves(window):
+    fields = {
+        "Max chars": window.subtitle_max_chars_input,
+        "Max sentences (Latin)": window.subtitle_max_sentences_default_input,
+        "Max sentences (CJK)": window.subtitle_max_sentences_cjk_input,
+        "History lines": window.subtitle_history_lines_input,
+        "Stall timeout (sec)": window.stall_timeout_input,
+        "Stall check interval (sec)": window.stall_check_interval_input,
+    }
+    labels = {label.text(): label for label in window.pages[3].findChildren(QtWidgets.QLabel)}
+    for text, field in fields.items():
+        assert "Example" in field.toolTip(), text
+        assert labels[text].toolTip() == field.toolTip(), text  # hovering the label works too
+    assert "Off:" in window.subtitle_show_partial_check.toolTip()
+    assert "(Default 15)" in window.stall_timeout_input.toolTip()
 
 
 def test_system_palette_reapplies_without_backend_or_dirty_changes(window, monkeypatch):

@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
-from qfluentwidgets import BodyLabel, FluentStyleSheet, LineEdit, PrimaryPushButton, PushButton
+from qfluentwidgets import BodyLabel, LineEdit, StrongBodyLabel
 
 from backend.local_catalog import (
     MODELS,
@@ -28,7 +28,7 @@ from backend.local_runtime import (
 )
 from gui import config_manager
 from gui._local_model_form import build_form
-from gui.fluent_kit import muted_label
+from gui.fluent_kit import FluentDialog, muted_label
 
 
 def activate_config(config: dict, model_id: str, settings: dict, result: dict, target: str) -> dict:
@@ -61,6 +61,28 @@ def deactivate_config(config: dict) -> dict:
     if updated.get('translation', {}).get('engine') == 'managed_llama':
         updated['translation']['engine'] = 'noop'
     return updated
+
+
+class AddModelDialog(FluentDialog):
+    """Ask for a public Hugging Face repository and GGUF file name."""
+
+    def __init__(self, parent: QtWidgets.QWidget) -> None:
+        super().__init__(parent)
+        self.widget.setMinimumWidth(480)
+        self.viewLayout.addWidget(StrongBodyLabel('Add public Hugging Face GGUF'))
+        form = QtWidgets.QFormLayout()
+        form.setVerticalSpacing(10)
+        self.repo, self.filename = LineEdit(), LineEdit()
+        self.repo.setPlaceholderText('owner/repository')
+        self.filename.setPlaceholderText('model-Q4_K_M.gguf (or first shard path)')
+        form.addRow(BodyLabel('Repository'), self.repo)
+        form.addRow(BodyLabel('GGUF file'), self.filename)
+        self.viewLayout.addLayout(form)
+        self.viewLayout.addWidget(muted_label(
+            'Public GGUF weights only. The model must support a standard chat template. '
+            'A pinned revision and SHA256 will be saved; no repository code runs.', small=True))
+        buttons = self.set_buttons([('Cancel', False, self.reject), ('OK', True, self.accept)])
+        buttons['OK'].setDefault(True)
 
 
 class InstallWorker(QtCore.QThread):
@@ -423,33 +445,10 @@ class LocalModelController(QtCore.QObject):
     def add_model(self):
         if self.busy or self.catalog_worker:
             return
-        dialog = QtWidgets.QDialog(self.controls['model'].window())
-        FluentStyleSheet.DIALOG.apply(dialog)
-        dialog.setWindowTitle('Add public Hugging Face GGUF')
-        dialog.setMinimumWidth(480)
-        form = QtWidgets.QFormLayout(dialog)
-        form.setContentsMargins(24, 20, 24, 20)
-        form.setVerticalSpacing(10)
-        repo, filename = LineEdit(), LineEdit()
-        repo.setPlaceholderText('owner/repository')
-        filename.setPlaceholderText('model-Q4_K_M.gguf (or first shard path)')
-        form.addRow(BodyLabel('Repository'), repo)
-        form.addRow(BodyLabel('GGUF file'), filename)
-        notice = muted_label('Public GGUF weights only. The model must support a standard chat template. '
-                             'A pinned revision and SHA256 will be saved; no repository code runs.', small=True)
-        form.addRow(notice)
-        ok, cancel = PrimaryPushButton('OK'), PushButton('Cancel')
-        ok.setDefault(True)
-        ok.clicked.connect(dialog.accept)
-        cancel.clicked.connect(dialog.reject)
-        buttons = QtWidgets.QHBoxLayout()
-        buttons.addStretch(1)
-        buttons.addWidget(cancel)
-        buttons.addWidget(ok)
-        form.addRow(buttons)
+        dialog = AddModelDialog(self.controls['model'].window())
         if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
-        self.catalog_worker = CatalogWorker(repo.text().strip(), filename.text().strip(), self)
+        self.catalog_worker = CatalogWorker(dialog.repo.text().strip(), dialog.filename.text().strip(), self)
         self.catalog_worker.outcome.connect(self._catalog_result)
         self.catalog_worker.finished.connect(self._catalog_finished)
         self._set_busy(True)
