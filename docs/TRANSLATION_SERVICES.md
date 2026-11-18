@@ -27,6 +27,8 @@
    分片模型填任一片，程式會解析同組分片並下載完整檔案。
 3. 雲端／自架服務：在 **Translation services** 新增或編輯服務，填入 endpoint、
    API key 與 model，按 **Save defaults**。API 類型等設定位於進階資料。
+   API key 只能填在 API key 欄位；endpoint 網址內含金鑰或密碼
+   （`https://金鑰@host`、`?key=…`、`?token=…`）時，新增或修改後的儲存會被拒絕。已存在的服務維持可用，直到網址被修改。
    需要沿用該服務時，勾選桌面預設選項。
    擴充功能 Options 儲存 API 服務時會依序以 Chat completions、Responses、Messages
    翻譯短句，保存第一種成功的格式；三種都失敗時不寫入設定並顯示連線錯誤。

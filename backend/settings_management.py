@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_store import (
+    check_service_urls,
     load_snapshot,
     normalize_service_profile,
     public_profile,
@@ -104,6 +105,7 @@ def prepare_service_profile(config: dict[str, Any], data: dict[str, Any]) -> dic
         raise ValueError("A service model is required.")
     if normalized["engine"] != "nllb" and not normalized["base_url"].startswith(("http://", "https://")):
         raise ValueError("Enter a complete HTTP or HTTPS endpoint.")
+    check_service_urls({"translation": {"service_profiles": [normalized]}}, config)
     return normalized
 
 

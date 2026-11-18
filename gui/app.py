@@ -1499,6 +1499,7 @@ class MainWindow(FluentWindow):
             except ImportError:
                 config_store = None
             if config_store is not None and callable(getattr(config_store, "save_config", None)):
+                config_store.check_service_urls(updated, self.config)
                 self.config_revision = config_store.save_config(
                     self.config_path,
                     updated,

@@ -146,3 +146,13 @@ def test_management_does_not_save_when_all_api_formats_fail(tmp_path: Path, monk
     assert result["ok"] is False
     assert "All three API formats failed" in result["error"]
     assert load_snapshot(path) == (before, revision)
+
+
+def test_management_refuses_a_key_typed_into_the_service_url(tmp_path: Path) -> None:
+    path, service = _fixture(tmp_path)
+    revision = settings_management.snapshot(path, service)["revision"]
+    with pytest.raises(ValueError, match="API key field"):
+        settings_management.mutate(path, service, "save_profile", {"profile": {
+            "id": "office", "name": "Office", "engine": "openai_compatible", "model": "m",
+            "base_url": "https://sk-secret@host.example/v1"}}, revision)
+    assert load_snapshot(path)[0]["translation"]["service_profiles"] == []

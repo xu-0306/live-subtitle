@@ -28,6 +28,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Sequence
+from urllib.parse import parse_qsl, urlsplit
 
 import yaml
 
@@ -526,8 +527,28 @@ def _legacy_vllm_profiles(config: Mapping[str, Any]) -> list[dict[str, Any]]:
     return profiles
 
 
+def _legacy_compatible_profiles(config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Surface a hand-edited ``translation.openai_compatible`` section as a profile.
+
+    Nothing writes that section any more (only a person editing the YAML does),
+    so it would otherwise be dropped the first time a catalogue is saved.
+    """
+    translation = config.get("translation")
+    section = translation.get("openai_compatible") if isinstance(translation, Mapping) else None
+    if not isinstance(section, Mapping) or not (_as_text(section.get("model")) or _as_text(section.get("base_url"))):
+        return []
+    try:
+        return [normalize_service_profile(
+            {"id": "openai-compatible-default", "name": "OpenAI-compatible API", **dict(section),
+             "engine": "openai_compatible"},
+            source="legacy-openai-compatible",
+        )]
+    except (TypeError, ValueError):
+        return []
+
+
 def service_profiles(config: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Return canonical profiles while preserving legacy vLLM entries."""
+    """Return canonical profiles while preserving legacy vLLM and openai_compatible entries."""
 
     translation = config.get("translation")
     if not isinstance(translation, Mapping):
@@ -552,11 +573,39 @@ def service_profiles(config: Mapping[str, Any]) -> list[dict[str, Any]]:
             seen.add(profile["id"])
             profiles.append(profile)
     if not has_explicit_catalog:
-        for profile in _legacy_vllm_profiles(config):
+        for profile in (*_legacy_vllm_profiles(config), *_legacy_compatible_profiles(config)):
             if profile["id"] not in seen:
                 seen.add(profile["id"])
                 profiles.append(profile)
     return profiles
+
+
+_SECRET_QUERY_NAMES = {"key", "api_key", "apikey", "token", "access_token", "secret", "password"}
+
+
+def check_service_urls(config: Mapping[str, Any], previous: Mapping[str, Any] | None = None) -> None:
+    """Refuse a key typed into a service URL; the API key field is the only place for one.
+
+    Only URLs that are new or changed against ``previous`` are checked, so a service
+    saved by an older version keeps working until its URL is edited. The message names
+    the service, never the URL, so the secret is not echoed.
+    """
+    saved = {p["id"]: p["base_url"] for p in service_profiles(previous)} if previous is not None else {}
+    for profile in service_profiles(config):
+        url = profile["base_url"]
+        if not url or saved.get(profile["id"]) == url:
+            continue
+        try:
+            parts = urlsplit(url)
+            query = {name.casefold().replace("-", "_") for name, _ in parse_qsl(parts.query)}
+            userinfo = bool(parts.username or parts.password)
+        except ValueError:
+            continue  # not a parseable URL: the endpoint check reports that
+        if userinfo or query & _SECRET_QUERY_NAMES:
+            raise ValueError(
+                f"The URL of “{profile['name']}” contains a key or password. "
+                "Remove it from the URL and enter it in the API key field."
+            )
 
 
 def service_profile_issues(config: Mapping[str, Any]) -> list[dict[str, str]]:

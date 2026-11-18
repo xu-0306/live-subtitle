@@ -144,6 +144,17 @@ def test_recommended_model_becomes_default_only_after_verified_install():
     assert 'pending_default_model_id' not in updated['local_llama']
 
 
+def test_a_v020_managed_llama_default_survives_when_the_engine_is_retired():
+    legacy = {'translation': {'engine': 'managed_llama'},
+              'local_llama': {'enabled': True, 'model_id': 'a', 'installed_models': []}}
+    updated = lc.activate_config(legacy, 'b', {}, {})
+    assert updated['translation']['engine'] == 'noop'
+    assert updated['translation']['default_selection'] == {'kind': 'local', 'id': 'a'}
+    none = {'kind': 'none', 'id': 'none'}
+    chosen = {**legacy, 'translation': {'engine': 'managed_llama', 'default_selection': none}}
+    assert lc.activate_config(chosen, 'b', {}, {})['translation']['default_selection'] == none
+
+
 def test_stale_installed_flag_is_not_shown_as_a_completed_download(app, tmp_path):
     model_id = lc.MODELS[0].id
     config = {

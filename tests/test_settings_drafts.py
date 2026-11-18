@@ -14,6 +14,7 @@ from PySide6 import QtCore, QtGui, QtWidgets, QtWebSockets
 from qfluentwidgets import SpinBox
 
 from backend import config_store
+from backend.translation_service import resolve_selection
 from gui import config_manager, fluent_kit
 from gui.app import LANGUAGE_OPTIONS, MainWindow
 from gui.wheel_guard import protect_wheel_controls
@@ -194,6 +195,45 @@ def test_save_all_writes_every_page_in_one_click(window):
     assert saved["translation"]["service_profiles"][0]["model"] == "all-model"
     assert not window._dirty and window.dirty_label.text() == ""
     assert window.service_catalog.editor_status.text() == "Saved"
+
+
+@pytest.mark.parametrize("legacy", ["compatible", "managed"])
+def test_save_all_keeps_a_legacy_default_translation_service(tmp_path, legacy):
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    cfg = config_manager.load_default_config()
+    cfg["models"] = {"root": str(tmp_path / "models")}
+    if legacy == "compatible":
+        cfg["translation"].update(engine="openai_compatible", openai_compatible={
+            "model": "old", "base_url": "https://provider.example.test/v1", "api_key": "k"})
+    else:
+        cfg["translation"]["engine"] = "managed_llama"
+        cfg.setdefault("local_llama", {}).update(
+            enabled=True, model_id="qwen25-1.5b-q4", installed_models=["qwen25-1.5b-q4"])
+    path = tmp_path / "config.yaml"
+    config_manager.write_config(path, cfg)
+
+    def effective():
+        base, local_id = resolve_selection(config_store.load_snapshot(path)[0], None)
+        section = base.get(base["engine"]) if isinstance(base.get(base["engine"]), dict) else {}
+        return base["engine"], local_id, section.get("model"), section.get("base_url"), section.get("api_key")
+
+    before = effective()
+    win = MainWindow(path, auto_start=False, setup_tray=False)
+    try:
+        assert win._save_config_to_disk()
+        assert effective() == before
+    finally:
+        win.backend_runner = None
+        win.close()
+
+
+def test_save_all_refuses_a_key_typed_into_a_service_url(window):
+    before = config_store.load_snapshot(window.config_path)
+    window.service_catalog.endpoint_input.setText("https://sk-secret@example.test/v1")
+    assert window._save_config_to_disk() is False
+    assert config_store.load_snapshot(window.config_path) == before
+    window.service_catalog.endpoint_input.setText("https://example.test/v1")
+    assert window._save_config_to_disk() is True
 
 
 def test_new_service_discard_restores_empty_editor(window):

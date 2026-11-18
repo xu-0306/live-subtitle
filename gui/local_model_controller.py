@@ -31,8 +31,20 @@ from gui._local_model_form import build_form
 from gui.fluent_kit import FluentDialog, muted_label
 
 
+def _pin_legacy_local_default(cfg: dict) -> None:
+    """Keep a v0.2.0 default (engine=managed_llama) as a real selection before the engine is retired."""
+    translation = cfg.get('translation')
+    model_id = (cfg.get('local_llama') or {}).get('model_id')
+    if not (isinstance(translation, dict) and model_id and translation.get('engine') == 'managed_llama'):
+        return
+    if not any(isinstance(s, dict) and s.get('kind') and s.get('id')
+               for s in (translation.get('default_selection'), translation.get('selection'))):
+        translation['default_selection'] = {'kind': 'local', 'id': model_id}
+
+
 def activate_config(config: dict, model_id: str, settings: dict, result: dict) -> dict:
     updated = copy.deepcopy(config)
+    _pin_legacy_local_default(updated)
     local = updated.setdefault('local_llama', {})
     # Installation publishes availability only; the extension chooses inference.
     installed = list(local.get('installed_models', []))
@@ -412,6 +424,7 @@ class LocalModelController(QtCore.QObject):
             if local['model_id'] not in installed:
                 installed.append(local['model_id'])
             local['enabled'] = False
+            _pin_legacy_local_default(cfg)
             if cfg.get('translation', {}).get('engine') == 'managed_llama':
                 cfg['translation']['engine'] = 'noop'
                 cfg['translation'].pop('managed_llama', None)

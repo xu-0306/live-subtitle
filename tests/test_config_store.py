@@ -114,3 +114,28 @@ def test_json_revision_roundtrip_stays_within_javascript_safe_integer(tmp_path: 
     assert document["unicode"] == "測試"
     assert 0 < revision < 2**53
     assert int(str(revision)) == revision
+
+
+def test_hand_edited_openai_compatible_section_is_a_profile_until_a_catalogue_exists() -> None:
+    config = {"translation": {"engine": "openai_compatible", "openai_compatible": {
+        "model": "old", "base_url": "https://provider.example.test/v1", "api_key": "k"}}}
+    [profile] = config_store.service_profiles(config)
+    assert (profile["engine"], profile["model"], profile["base_url"], profile["api_key"]) == (
+        "openai_compatible", "old", "https://provider.example.test/v1", "k")
+    config["translation"]["service_profiles"] = []
+    assert config_store.service_profiles(config) == []
+
+
+def _catalogue(url: str) -> dict:
+    return {"translation": {"service_profiles": [
+        {"id": "a", "name": "Office", "engine": "openai_compatible", "model": "m", "base_url": url}]}}
+
+
+def test_service_urls_that_carry_a_key_are_refused_when_new_or_changed() -> None:
+    config_store.check_service_urls(_catalogue("https://host.example/v1?api-version=2024-02-01"))
+    for url in ("https://sk-secret@host.example/v1", "https://user:pw@host.example/v1",
+                "https://host.example/v1?API-Key=sk-x", "https://host.example/v1?token=x"):
+        with pytest.raises(ValueError, match="API key field") as error:
+            config_store.check_service_urls(_catalogue(url))
+        assert "Office" in str(error.value) and url not in str(error.value)
+        config_store.check_service_urls(_catalogue(url), _catalogue(url))  # saved earlier: keeps working
