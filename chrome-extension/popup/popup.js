@@ -617,7 +617,29 @@
     persistTranslationSelection();
     persistSttSelection();
   }
+  // Update notice: the service worker records the latest GitHub release (shared/update-check.js); this only shows it.
+  async function renderUpdate() {
+    const Updates = global.STTUpdateCheck;
+    const version = global.chrome?.runtime?.getManifest?.()?.version || "";
+    const label = $("appVersion");
+    if (label && version) label.textContent = ` · v${version}`;
+    const banner = $("updateBanner");
+    if (!Updates || !banner) return;
+    const data = await storageGet([Updates.STATE_KEY, Updates.ENABLED_KEY, Updates.DISMISSED_KEY]);
+    const info = Updates.describe(data[Updates.STATE_KEY], data[Updates.DISMISSED_KEY], version);
+    state.update = info;
+    banner.hidden = !(info.available && !info.dismissed && data[Updates.ENABLED_KEY] !== false);
+    if (banner.hidden) return;
+    $("updateBannerText").textContent = `Version ${info.version} is available (this is ${version}).`;
+    const link = $("updateBannerLink");
+    if (link) link.href = info.url;
+  }
+  function dismissUpdate() {
+    const Updates = global.STTUpdateCheck;
+    if (Updates && state.update?.version) storageSet({ [Updates.DISMISSED_KEY]: state.update.version }).catch(() => {});
+  }
   function wireEvents() {
+    $("updateBannerDismiss")?.addEventListener("click", dismissUpdate);
     $("translationModelSelect")?.addEventListener("change", persistTranslationSelection);
     $("sttModelSizeSelect")?.addEventListener("change", persistSttSelection);
     $("translationLanguageSelect")?.addEventListener("change", persistLanguageSelection);
@@ -644,8 +666,10 @@
       global.chrome.storage.onChanged.addListener((changes, areaName) => {
         if (areaName && areaName !== "local") return;
         let rerender = false;
+        let updateChanged = false;
         for (const [key, change] of Object.entries(changes || {})) {
           const value = change?.newValue;
+          if (global.STTUpdateCheck && [global.STTUpdateCheck.STATE_KEY, global.STTUpdateCheck.ENABLED_KEY, global.STTUpdateCheck.DISMISSED_KEY].includes(key)) updateChanged = true;
           if (key === KEYS.wsUrl) {
             const nextUrl = text(value || DEFAULT_WS_URL);
             const changed = nextUrl !== state.wsUrl;
@@ -669,6 +693,7 @@
           if (key === KEYS.translatedScale) renderFontScale("subtitleTranslatedSize", "subtitleTranslatedSizeValue", value);
         }
         if (rerender) renderChoices();
+        if (updateChanged) renderUpdate();
       });
     }
     if (!state.focusRefreshBound && typeof global.addEventListener === "function") {
@@ -707,6 +732,9 @@
     if (banner && global.ResizeObserver) new global.ResizeObserver(() => updateStatusOverflow(banner)).observe(banner);
     banner?.addEventListener("scroll", () => updateStatusOverflow(banner), { passive: true });
     wireEvents();
+    renderUpdate();
+    // Asks the service worker, which answers from storage unless a daily check is due; never awaited by the UI.
+    if (global.STTUpdateCheck) sendRuntime({ type: "update-check" });
     loadState().then(() => {
       // Catalog and status are independent. A slow/failed catalog must never
       // delay Stop or hide the current capture snapshot.
@@ -725,6 +753,7 @@
     wireEvents,
     applyThemePreference,
     renderChoices,
+    renderUpdate,
     persistSelection,
     setStatus,
     refreshDesktopServices,

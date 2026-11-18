@@ -144,6 +144,11 @@ button:disabled, input:disabled, select:disabled { cursor: not-allowed; opacity:
 .refresh-button { width: 27px; height: 27px; border-radius: var(--radius-small); color: var(--blue); font-size: 18px; line-height: 1; }
 .icon-button:hover, .refresh-button:hover { border-color: var(--blue); color: var(--blue); background: var(--blue-soft); }
 
+.update-banner { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; border-left: 3px solid var(--blue); font-size: 12px; }
+.update-banner > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.update-link { flex: 0 0 auto; padding: 3px 2px; color: var(--blue); font-weight: 600; }
+.update-link:focus-visible { outline: none; box-shadow: var(--focus); }
+
 .card {
   border: 1px solid var(--line);
   border-radius: var(--radius);

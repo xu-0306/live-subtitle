@@ -108,7 +108,7 @@ Install PyTorch for your environment, then start the desktop app:
 | **Speech recognition** | Choose the Whisper speech-recognition model. |
 | **Tuning** | Adjust subtitle and streaming behaviour. |
 | **Translation services** | Save and test connections to Ollama, OpenAI-compatible APIs, vLLM and similar services. |
-| **Settings** | Theme, where settings and models are stored, and the model recommendation. |
+| **Settings** | Theme, where settings and models are stored, the model recommendation, and the app version with its update check. |
 
 ## How it works
 
@@ -134,6 +134,8 @@ The extension captures the tab's audio and sends it to the local server at `ws:/
 ### Privacy
 
 Tab audio is sent only to the local server. If a translation service is selected, the recognized text (not the audio) is sent to that service, which may run locally, on the network or in the cloud. With local translation, recognition and translation both stay on the same machine. API keys, credentials and local model paths are never passed to web pages.
+
+**Update check.** The desktop app and the extension each ask GitHub's public API for the latest release (`GET https://api.github.com/repos/xu-0306/live-subtitle/releases/latest`) so they can tell you when a new version exists. Only that version query is sent: no audio, text, settings, keys or account, and no cookies or referrer. As with any web request, GitHub sees your IP address. Nothing is downloaded or installed automatically. The app checks at most once a day at start-up and the extension about once a day in the background; a failed check, such as being offline, is silent. Turn it off under **Settings → About** in the app and **Options → About & updates** in the extension.
 
 ## Status and limits
 
@@ -170,6 +172,23 @@ Settings from the older `%APPDATA%\STT-TTS\config.yaml` can be copied to the new
 ### Using the extension without the desktop app
 
 If you start the backend directly instead of through the desktop app, the extension's **Options** page covers the common settings: manage translation-service connections, and save the shared speech, translation and target-language defaults. Models are installed and removed in the desktop app. Options only manages a backend on this computer. Keys can be sent to the backend for storage, but the backend never sends them back. The desktop app picks up these changes when it has no unsaved edits of its own.
+
+### Updating
+
+Both parts only tell you that a new version exists; neither downloads or replaces anything, because an unpacked extension cannot update itself. The app shows a prompt with the release notes and a button that opens the download page, and the extension shows the same notice in its popup and on its Options page. To update, take the two ZIPs from the [latest release](https://github.com/xu-0306/live-subtitle/releases/latest): unzip and run the new Windows package (settings and models in `%APPDATA%\Live Subtitle` are kept), then replace the files in the folder you loaded as the extension and press **Reload** on `chrome://extensions`.
+
+The version number lives in one place, `chrome-extension/manifest.json`. The release tag is `v` plus that number, and the app reads the same file.
+
+### Extension permissions
+
+| Permission | Why |
+| --- | --- |
+| `tabCapture`, `activeTab` | Capture the audio of the tab you start captioning. |
+| `offscreen` | Process the captured audio in an offscreen document. |
+| `scripting` | Show the subtitle box on the page. |
+| `storage` | Keep your settings. |
+| `alarms` | Wake the background service worker about once a day for the update check. It adds no install warning. |
+| Host access (`<all_urls>`) | Show subtitles on any page and reach the local server and the translation service you choose. The update check reuses it; no new host permission was added. |
 
 ### Which setting wins
 

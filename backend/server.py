@@ -1692,6 +1692,14 @@ async def _translate_and_send(
         # Empty output is a provider failure/timeout, not a chunk boundary.
         # Keep newer ASR state and the sequence available for a later retry.
         return
+    loop = _find_repetition_loop(translated)
+    if loop is not None:
+        # A small model locked on one token runs to max_tokens; drop it like an
+        # empty result instead of showing a wall of repeated characters.
+        logger.warning(
+            "Dropping runaway translation: unit=%r repeats=%d span=%d", *loop
+        )
+        return
     await _send_subtitle(
         websocket,
         request.text,

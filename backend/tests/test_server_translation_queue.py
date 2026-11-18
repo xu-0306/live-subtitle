@@ -94,6 +94,20 @@ class ImmediateProvider:
         return f"translated:{text}"
 
 
+class FixedOutputProvider:
+    profile_id = "fixed"
+    max_concurrency = 1
+    cancellation_safe = True
+
+    def __init__(self, output: str) -> None:
+        self.output = output
+
+    async def atranslate(
+        self, text: str, source_lang, target_lang=None, context=None
+    ) -> str:
+        return self.output
+
+
 class LatestWinsQueueTests(unittest.IsolatedAsyncioTestCase):
     def test_repetition_guard_distinguishes_speech_from_runaway_loops(self) -> None:
         self.assertIsNone(_find_repetition_loop("はい、はい、分かりました"))
@@ -315,6 +329,29 @@ class LatestWinsQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(websocket.messages, [
             {"type": "error", "message": "Translation error: RuntimeError"}
         ])
+
+    async def _subtitles_for_translation(self, output: str) -> list[dict[str, object]]:
+        websocket = FakeWebSocket()
+        session = TranslationSession(
+            {"timeout_sec": 1},
+            "en",
+            FixedOutputProvider(output),
+            TranslationScheduler(global_max_concurrency=1),
+        )
+        session.pending_seq = 1
+        _queue_translation(websocket, session, "Like tang Tango Tango", "en", True, 1)
+        assert session.translation_task is not None
+        await session.translation_task
+        return [m for m in websocket.messages if m.get("type") == "subtitle"]
+
+    async def test_runaway_translation_output_is_not_sent(self) -> None:
+        # Qwen3.5-2B locks onto one token and runs to max_tokens (finish_reason=length).
+        self.assertEqual(await self._subtitles_for_translation("像" + "唐" * 190), [])
+
+    async def test_ordinary_repetition_in_translation_is_still_sent(self) -> None:
+        subtitles = await self._subtitles_for_translation("不，不，不，不。我說的是不。")
+        self.assertEqual(len(subtitles), 1)
+        self.assertEqual(subtitles[0]["translated"], "不，不，不，不。我說的是不。")
 
     async def test_cumulative_snapshot_after_force_flush_only_emits_uncommitted_suffix(self) -> None:
         session = TranslationSession(

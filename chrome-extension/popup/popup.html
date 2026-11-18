@@ -12,7 +12,7 @@
         <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
         <div class="brand-copy">
           <strong>Live Subtitle</strong>
-          <span>tab audio to live subtitles</span>
+          <span>tab audio to live subtitles<span id="appVersion"></span></span>
         </div>
         <div class="header-actions">
           <button id="openSettingsBtn" class="icon-button" type="button" title="Open options" aria-label="Open options">⚙</button>
@@ -20,6 +20,12 @@
       </header>
 
       <div class="popup-scroll">
+      <aside id="updateBanner" class="update-banner card" role="status" hidden>
+        <span id="updateBannerText">A new version is available.</span>
+        <a id="updateBannerLink" class="update-link" href="https://github.com/xu-0306/live-subtitle/releases/latest" target="_blank" rel="noopener noreferrer">Download</a>
+        <button id="updateBannerDismiss" class="icon-button" type="button" title="Hide until the next version" aria-label="Hide this update notice until the next version">×</button>
+      </aside>
+
       <section class="connection-card card">
         <div class="connection-row">
           <div class="connection-copy">
@@ -121,6 +127,7 @@
     <script src="../shared/theme.js"></script>
     <script src="../shared/capture-settings.js"></script>
     <script src="../shared/migration.js"></script>
+    <script src="../shared/update-check.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

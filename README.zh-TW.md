@@ -108,7 +108,7 @@ python -m pip install -r gui\requirements.txt
 | **Speech recognition** | 選擇 Whisper 語音辨識模型。 |
 | **Tuning** | 調整字幕與串流行為。 |
 | **Translation services** | 儲存並測試 Ollama、OpenAI 相容 API、vLLM 等服務的連線。 |
-| **Settings** | 主題、設定與模型存放位置、模型推薦。 |
+| **Settings** | 主題、設定與模型存放位置、模型推薦，以及程式版本與更新檢查。 |
 
 ## 運作方式
 
@@ -134,6 +134,8 @@ flowchart LR
 ### 隱私
 
 分頁音訊只會傳送到本機伺服器。選用翻譯服務時，傳送的是辨識後的文字而非音訊，服務可能位於本機、區網或雲端。使用本機翻譯時，辨識與翻譯都在同一台電腦完成。API 金鑰、帳密與本機模型路徑不會傳給網頁。
+
+**更新檢查。** 桌面程式與擴充功能各自向 GitHub 的公開 API 查詢最新版本（`GET https://api.github.com/repos/xu-0306/live-subtitle/releases/latest`），以便在有新版時通知你。送出的只有這個版本查詢：不含音訊、文字、設定、金鑰或帳號，也不帶 cookie 或 referrer。和任何網路請求一樣，GitHub 看得到你的 IP 位址。不會自動下載或安裝任何東西。桌面程式在啟動時最多每天檢查一次，擴充功能約每天在背景檢查一次；檢查失敗（例如離線）時不會有任何提示。可在桌面程式的 **Settings → About**、擴充功能的 **Options → About & updates** 關閉。
 
 ## 目前狀態與限制
 
@@ -170,6 +172,23 @@ Windows 預設資料結構：
 ### 不使用桌面程式
 
 直接啟動後端時，可在擴充功能的 **Options** 頁完成常用設定：管理翻譯服務連線，以及儲存共用的語音、翻譯與目標語言預設值。模型的下載、發布與移除在桌面程式進行。Options 僅管理本機後端；金鑰可交由後端保存，但後端不會回傳金鑰。桌面程式沒有未儲存的修改時，會自動載入這些變更。
+
+### 更新
+
+兩邊都只會通知你有新版，不會自動下載或取代任何檔案，因為未封裝的擴充功能無法自行更新。桌面程式會顯示附發行說明的提示與開啟下載頁的按鈕，擴充功能則在彈出視窗與 Options 頁顯示同樣的通知。更新時，到[最新版本](https://github.com/xu-0306/live-subtitle/releases/latest)下載兩個 ZIP：解壓縮並執行新的 Windows 套件（`%APPDATA%\Live Subtitle` 內的設定與模型會保留），再把載入擴充功能的資料夾內檔案換成新版，並在 `chrome://extensions` 按下 **重新載入**。
+
+版本號只記在一個地方：`chrome-extension/manifest.json`。發行標籤是 `v` 加上這個號碼，桌面程式讀的也是同一個檔案。
+
+### 擴充功能權限
+
+| 權限 | 用途 |
+| --- | --- |
+| `tabCapture`、`activeTab` | 擷取你開始產生字幕的分頁音訊。 |
+| `offscreen` | 在 offscreen 文件中處理擷取到的音訊。 |
+| `scripting` | 在網頁上顯示字幕框。 |
+| `storage` | 保存你的設定。 |
+| `alarms` | 約每天喚醒一次背景 service worker，進行更新檢查；不會增加安裝時的警告。 |
+| 主機存取（`<all_urls>`） | 在任何網頁顯示字幕，並連到本機伺服器與你選的翻譯服務。更新檢查沿用這項權限，沒有新增任何主機權限。 |
 
 ### 設定的優先順序
 

@@ -21,6 +21,8 @@ whisper_hiddenimports = collect_submodules(
 datas = [
     (str(ROOT / "backend" / "config.yaml"), "backend"),
     (str(ROOT / "backend" / "local_models.json"), "backend"),
+    # The app's version number lives only here; gui/update_check.py reads it for the update check.
+    (str(ROOT / "chrome-extension" / "manifest.json"), "chrome-extension"),
     *whisper_datas,
     *copy_metadata("whisperlivekit"),
 ]

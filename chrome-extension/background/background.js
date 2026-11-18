@@ -1,4 +1,4 @@
-importScripts("../shared/connection-settings.js");
+importScripts("../shared/connection-settings.js", "../shared/update-check.js");
 
 const OFFSCREEN_URL = chrome.runtime.getURL("offscreen/offscreen.html");
 const tabStatus = new Map();
@@ -23,6 +23,43 @@ function migrateStoredTranslationSecrets() {
 }
 
 migrateStoredTranslationSecrets();
+
+// Update check (shared/update-check.js): an unpacked extension cannot update itself, so the worker only
+// looks up the latest GitHub release about once a day and records it for the popup and Options.
+// The "alarms" permission exists for this; the worker is asleep most of the time and the alarm wakes it.
+const Updates = globalThis.STTUpdateCheck;
+let updateCheckInFlight = null;
+
+function checkForUpdate(force = false) {
+  if (!Updates) return Promise.resolve(null);
+  if (!updateCheckInFlight) {
+    updateCheckInFlight = Updates.runCheck({
+      storage: chrome.storage.local,
+      fetchImpl: globalThis.fetch,
+      force,
+    }).catch((err) => {
+      console.warn("[background] Update check failed:", err?.message || err);
+      return null;
+    }).finally(() => { updateCheckInFlight = null; });
+  }
+  return updateCheckInFlight;
+}
+
+function ensureUpdateAlarm() {
+  if (!Updates || !chrome.alarms?.get) return;
+  // Alarms can be cleared (browser restart, extension update), so make sure one exists every time the worker starts.
+  chrome.alarms.get(Updates.ALARM, (alarm) => {
+    if (chrome.runtime.lastError || alarm) return;
+    chrome.alarms.create(Updates.ALARM, { delayInMinutes: 1, periodInMinutes: Updates.ALARM_PERIOD_MINUTES });
+  });
+}
+
+ensureUpdateAlarm();
+chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (Updates && alarm?.name === Updates.ALARM) checkForUpdate();
+});
+chrome.runtime.onStartup?.addListener(() => checkForUpdate());
+chrome.runtime.onInstalled?.addListener(() => checkForUpdate());
 
 async function ensureContentScript(tabId) {
   if (!tabId) return false;
@@ -403,6 +440,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "offscreen-keepalive") {
     sendResponse({ ok: true });
+    return true;
+  }
+
+  // From the popup (throttled, answers from storage when no check is due) and Options ("Check now", forced).
+  if (message.type === "update-check") {
+    checkForUpdate(Boolean(message.force)).then((state) => sendResponse({ ok: Boolean(state), state }));
     return true;
   }
 

@@ -76,7 +76,8 @@
   function syncButtons() {
     const offline = !state.snapshot;
     document.querySelectorAll("button").forEach((button) => {
-      button.disabled = state.busy || (offline && button.id !== "refreshSettings");
+      // Checking GitHub for a new version does not need the backend.
+      button.disabled = state.busy || (offline && button.id !== "refreshSettings" && button.id !== "checkUpdates");
     });
   }
   function setBusy(value) {
@@ -395,9 +396,40 @@
     global.addEventListener("resize", update);
     update();
   }
+  // About & updates: the service worker records the latest GitHub release (shared/update-check.js); this shows it.
+  async function renderUpdates() {
+    const Updates = global.STTUpdateCheck;
+    const version = global.chrome?.runtime?.getManifest?.()?.version || "";
+    if ($("appVersion") && version) $("appVersion").textContent = `v${version}`;
+    if (!Updates || !$("updateSummary")) return;
+    const data = await storageGet([Updates.STATE_KEY, Updates.ENABLED_KEY]);
+    const info = Updates.describe(data[Updates.STATE_KEY], "", version);
+    $("updateSummary").textContent = Updates.summary(info);
+    $("updateAuto").checked = data[Updates.ENABLED_KEY] !== false;
+    $("updateLink").href = info.url;
+  }
+  function wireUpdates() {
+    const Updates = global.STTUpdateCheck;
+    if (!Updates || !$("checkUpdates")) return;
+    $("updateAuto").addEventListener("change", () => storageSet({ [Updates.ENABLED_KEY]: $("updateAuto").checked }));
+    $("checkUpdates").addEventListener("click", async () => {
+      $("updateSummary").textContent = "Checking…";
+      await new Promise((resolve) => {
+        try {
+          global.chrome.runtime.sendMessage({ type: "update-check", force: true }, () => { void global.chrome.runtime.lastError; resolve(); });
+        } catch { resolve(); }
+      });
+      await renderUpdates();
+    });
+    global.chrome?.storage?.onChanged?.addListener?.((changes) => {
+      if (changes?.[Updates.STATE_KEY] || changes?.[Updates.ENABLED_KEY]) renderUpdates();
+    });
+  }
   async function init() {
     wire();
     wireNavigation();
+    wireUpdates();
+    renderUpdates();
     const saved = await storageGet(["wsUrl", "extensionTheme"]);
     state.wsUrl = saved.wsUrl || state.wsUrl;
     $("wsUrl").value = state.wsUrl;

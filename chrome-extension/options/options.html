@@ -9,7 +9,7 @@
 <div class="settings-layout">
   <aside class="settings-sidebar" aria-label="Settings sections">
     <div class="settings-brand"><div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div><div><strong>Live Subtitle</strong><small>Settings</small></div></div>
-    <nav class="settings-nav"><a href="#connection">Connection</a><a href="#defaults">Defaults for new captures</a><a href="#services">Translation services</a><a href="#appearance">Subtitle appearance</a></nav>
+    <nav class="settings-nav"><a href="#connection">Connection</a><a href="#defaults">Defaults for new captures</a><a href="#services">Translation services</a><a href="#appearance">Subtitle appearance</a><a href="#updates">About &amp; updates</a></nav>
     <p class="sidebar-note">Defaults and services are saved to the same settings file used by the desktop app. New captures use the latest choices.</p>
   </aside>
   <main class="settings-main">
@@ -46,7 +46,14 @@
       <div class="panel-heading"><div><h2>Subtitle appearance</h2></div><span class="panel-badge">Saved locally</span></div>
       <div class="appearance-grid"><div><div class="range-row"><label for="subtitleOriginalSize">Original text</label><output id="subtitleOriginalSizeValue">100%</output></div><input id="subtitleOriginalSize" type="range" min="0.7" max="1.6" step="0.1" value="1" /></div><div><div class="range-row"><label for="subtitleTranslatedSize">Translated text</label><output id="subtitleTranslatedSizeValue">100%</output></div><input id="subtitleTranslatedSize" type="range" min="0.7" max="1.6" step="0.1" value="1" /></div><div><div class="range-row"><label for="overlayOpacity">Overlay opacity</label><output id="overlayOpacityValue">85%</output></div><input id="overlayOpacity" type="range" min="0.35" max="1" step="0.05" value="0.85" /></div><div><div class="range-row"><label for="subtitleHistoryLines">History lines</label><output id="subtitleHistoryLinesValue">2</output></div><input id="subtitleHistoryLines" type="range" min="1" max="4" step="1" value="2" /></div></div><label class="checkbox-row"><input id="subtitleShowPartial" type="checkbox" checked /> Show partial subtitle line</label>
     </section>
+    <section id="updates" class="card settings-panel">
+      <div class="panel-heading"><div><h2>About &amp; updates</h2></div><span id="appVersion" class="panel-badge">—</span></div>
+      <p id="updateSummary" class="card-copy" role="status" aria-live="polite">Not checked yet.</p>
+      <label class="checkbox-row"><input id="updateAuto" type="checkbox" checked /> Check for a new version once a day</label>
+      <div class="panel-actions"><button id="checkUpdates" class="secondary-button" type="button">Check now</button><a id="updateLink" class="secondary-button link-button" href="https://github.com/xu-0306/live-subtitle/releases/latest" target="_blank" rel="noopener noreferrer">Open download page</a></div>
+      <p class="field-hint">This extension is loaded unpacked, so Chrome cannot update it. To update: download the new extension ZIP from the download page, replace the files in your extension folder, then press Reload on <code>chrome://extensions</code>. The check only reads GitHub's public release information; nothing about you, your audio or your settings is sent.</p>
+    </section>
   </main>
 </div>
-<script src="../shared/theme.js"></script><script src="../shared/connection-settings.js"></script><script src="../shared/migration.js"></script><script src="options.js"></script>
+<script src="../shared/theme.js"></script><script src="../shared/connection-settings.js"></script><script src="../shared/migration.js"></script><script src="../shared/update-check.js"></script><script src="options.js"></script>
 </body></html>

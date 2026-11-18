@@ -11,6 +11,12 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_update_check(monkeypatch):
+    """A MainWindow built without a config path (the production way) asks GitHub 5 s after start-up; never in tests."""
+    monkeypatch.setenv("STT_GUI_DISABLE_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
 def _free_main_windows():
     yield
     module = sys.modules.get("gui.app")

@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -19,7 +20,7 @@ from qfluentwidgets import (
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from gui import config_manager, fluent_kit
+from gui import config_manager, fluent_kit, update_check, update_dialog
 from gui.backend_runner import BackendRunner
 from gui.download_worker import ModelDownloadWorker
 from gui.local_model_controller import LocalModelController
@@ -133,10 +134,12 @@ class _PageIndexView:
 class MainWindow(FluentWindow):
     """Desktop control surface with a persistent sidebar and stacked pages.
 
-    ``auto_start`` and ``setup_tray`` are explicit seams for offscreen render
-    tests. Production defaults retain the existing tray and automatic startup
-    behavior, while tests can create an isolated window without spawning a
-    backend or touching the user's config.
+    ``auto_start``, ``setup_tray`` and ``check_updates`` are explicit seams for
+    offscreen render tests. Production defaults retain the existing tray,
+    automatic startup and start-up update check, while tests can create an
+    isolated window without spawning a backend, touching the user's config or
+    asking GitHub anything (an explicit ``config_path`` turns the update check
+    off unless ``check_updates`` says otherwise).
     """
 
     NAV_ITEMS = (
@@ -165,6 +168,7 @@ class MainWindow(FluentWindow):
         *,
         auto_start: bool | None = None,
         setup_tray: bool | None = None,
+        check_updates: bool | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("Live Subtitle")
@@ -221,6 +225,21 @@ class MainWindow(FluentWindow):
             else os.getenv("STT_GUI_DISABLE_TRAY", "").strip().lower()
             not in {"1", "true", "yes", "on"}
         )
+        # Update check: the version comes from the extension manifest, the remembered answer lives in
+        # update-check.json beside the settings file (not in config.yaml, so a check never bumps its revision).
+        self._app_version = update_check.read_app_version()
+        self._update_state_path = self.config_path.with_name("update-check.json")
+        self._update_state = update_check.load_state(self._update_state_path)
+        self._update_check_running = False
+        self._update_bridge = update_dialog.UpdateBridge(self)
+        self._update_bridge.done.connect(self._on_update_result)
+        self._update_check_at_start = (
+            bool(check_updates)
+            if check_updates is not None
+            else not explicit_config
+            and os.getenv("STT_GUI_DISABLE_UPDATE_CHECK", "").strip().lower()
+            not in {"1", "true", "yes", "on"}
+        )
         self._ui_font_family = self._ensure_ui_font()
         self.setFont(QtGui.QFont(self._ui_font_family, 10))
         # Plain Qt widgets did not inherit the window font (they fell back to "Sans Serif 9").
@@ -250,6 +269,9 @@ class MainWindow(FluentWindow):
             QtCore.QTimer.singleShot(0, self._run_first_start_setup_assistant)
         elif self._auto_start_enabled:
             QtCore.QTimer.singleShot(0, self._auto_start_if_valid)
+        if self._update_check_at_start and update_check.is_due(self._update_state):
+            # Well after the window (and any first-run dialog) is up; offline, it ends quietly.
+            QtCore.QTimer.singleShot(5000, self._start_update_check)
 
     @staticmethod
     def _ensure_ui_font() -> str:
@@ -730,6 +752,26 @@ class MainWindow(FluentWindow):
         )
         about_text.setObjectName("mutedText")
         about_layout.addWidget(about_text)
+        self.version_label = BodyLabel(f"Version {self._app_version}" if self._app_version else "Version unknown")
+        about_layout.addWidget(self.version_label)
+        self.update_auto_check = CheckBox("Check for updates when the app starts")
+        self.update_auto_check.setChecked(update_check.is_enabled(self._update_state))
+        about_layout.addWidget(self.update_auto_check)
+        update_row = QtWidgets.QHBoxLayout()
+        self.update_check_btn = PushButton("Check for updates")
+        self.update_check_btn.setAccessibleName("Check for updates")
+        self.update_status = BodyLabel(update_check.describe_state(self._update_state, self._app_version))
+        self.update_status.setObjectName("mutedText")
+        self.update_status.setWordWrap(True)
+        update_row.addWidget(self.update_check_btn)
+        update_row.addWidget(self.update_status, 1)
+        about_layout.addLayout(update_row)
+        about_layout.addWidget(fluent_kit.muted_label(
+            "The check asks GitHub for the latest release number, at most once a day. Nothing about you, "
+            "your audio or your settings is sent, and nothing is downloaded or installed for you. "
+            "This switch applies at once; it is not part of Save all.", small=True))
+        self.update_check_btn.clicked.connect(self._check_updates_clicked)
+        self.update_auto_check.toggled.connect(self._set_update_auto)
         layout.addWidget(about)
         layout.addStretch(1)
         return self._wrap_scroll_page(tab)
@@ -840,6 +882,69 @@ class MainWindow(FluentWindow):
         bar.adjustSize()
         if hasattr(self, "server_status_detail") and kind == "error":
             self.server_status_detail.setText(message)
+
+    # --- update check (gui/update_check.py): find out and tell, never download or install anything ---
+
+    def _check_updates_clicked(self, _checked: bool = False) -> None:
+        self._start_update_check(manual=True)
+
+    def _set_update_auto(self, enabled: bool) -> None:
+        self._update_state["enabled"] = bool(enabled)
+        if not update_check.save_state(self._update_state_path, self._update_state):
+            self._show_notice("Could not save the update-check setting.", "warning")
+
+    def _start_update_check(self, manual: bool = False) -> None:
+        if self._update_check_running:
+            return
+        self._update_check_running = True
+        self.update_check_btn.setEnabled(False)
+        self.update_status.setText("Checking…")
+        current, bridge = self._app_version, self._update_bridge
+
+        def work() -> None:
+            result = update_check.check(current)  # never raises: offline is just an error result
+            try:
+                bridge.done.emit(result, manual)
+            except RuntimeError:  # the window was closed in the meantime
+                pass
+
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+
+    def _on_update_result(self, result: "update_check.Result", manual: bool) -> None:
+        self._update_check_running = False
+        self.update_check_btn.setEnabled(True)
+        self._update_state = update_check.record_result(self._update_state, result)
+        update_check.save_state(self._update_state_path, self._update_state)
+        self.update_status.setText(update_check.describe_state(self._update_state, self._app_version))
+        if result.status == "new":
+            # Start-up checks stay quiet about a version the user skipped; the button always speaks.
+            if manual:
+                self._show_update_dialog(result.release)
+            elif not update_check.is_skipped(self._update_state, result.release):
+                self._show_update_bar(result.release)
+        elif manual:
+            if result.status == "current":
+                self._show_notice(f"You are on the latest version ({self._app_version}).")
+            else:
+                self._show_notice(f"Could not check for updates: {result.error}", "warning")
+
+    def _show_update_bar(self, release: "update_check.Release") -> None:
+        bar = InfoBar.info(
+            "Update available",
+            f"Live Subtitle {release.version} is out (you have {self._app_version}).",
+            parent=self, duration=-1)
+        details = PushButton("What's new")
+        details.clicked.connect(lambda: (bar.close(), self._show_update_dialog(release)))
+        bar.addWidget(details)
+
+    def _show_update_dialog(self, release: "update_check.Release") -> None:
+        choice = update_dialog.show_update_dialog(self, release, self._app_version)
+        if choice == "open":
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(release.url))
+        elif choice == "skip":
+            self._update_state["skipped"] = release.version
+            update_check.save_state(self._update_state_path, self._update_state)
+            self._show_notice(f"Version {release.version} skipped. Check for updates to see it again.")
 
     def _run_first_start_setup_assistant(self) -> None:
         applied = self._run_setup_assistant(first_run=True)
