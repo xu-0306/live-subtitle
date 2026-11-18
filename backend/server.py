@@ -237,8 +237,6 @@ try:
         server_id_for_config,
     )
     from . import service_probe, settings_management
-    from .local_catalog import get_model, resolve_hf_model
-    from .local_runtime import prepare_install
     from .config import LOCAL_TRANSLATION_MODELS_DIR_NAME, load_config, _default_app_dir
     from .translation_service import TranslationService
     from .translation_scheduler import TranslationScheduler
@@ -249,8 +247,6 @@ except ImportError:  # Fallback when running as a script.
     from config_store import RevisionConflictError, import_profiles, load_snapshot, normalize_service_profile, service_profiles, server_id_for_config
     import service_probe
     import settings_management
-    from local_catalog import get_model, resolve_hf_model
-    from local_runtime import prepare_install
     from config import LOCAL_TRANSLATION_MODELS_DIR_NAME, load_config, _default_app_dir
     from translation_service import TranslationService
     from translation_scheduler import TranslationScheduler
@@ -390,10 +386,10 @@ def _validate_v2_stt_selection(
         selected = item
         break
     if selected is None:
-        raise ValueError("Selected STT model is not in the desktop catalog. Refresh the desktop app.")
+        raise ValueError("Selected speech recognition model is not in the desktop catalog. Refresh the desktop app.")
     if selected.get("available") is not True:
         reason = str(selected.get("reason") or "Model files are not installed.")
-        raise ValueError(f"Selected STT model is unavailable: {reason}")
+        raise ValueError(f"Selected speech recognition model is unavailable: {reason}")
 
 
 async def _ensure_model_available(
@@ -1039,33 +1035,6 @@ def _split_sentences(text: str) -> list[str]:
     return segments
 
 
-def _dedupe_repeated_sentences(text: str, max_repeats: int) -> str:
-    if not text or max_repeats < 1:
-        return text
-    segments = _split_sentences(text)
-    if not segments:
-        return text
-    deduped: list[str] = []
-    last_key: Optional[str] = None
-    repeat = 0
-    for segment in segments:
-        normalized = _normalize_text(segment).strip(")]}\"'")
-        if not normalized:
-            continue
-        key = normalized.casefold()
-        if key == last_key:
-            repeat += 1
-        else:
-            repeat = 1
-            last_key = key
-        if repeat > max_repeats:
-            continue
-        deduped.append(segment.strip())
-    if not deduped:
-        return ""
-    return " ".join(deduped).strip()
-
-
 def _trim_text(text: str, max_chars: int) -> str:
     if not max_chars or len(text) <= max_chars:
         return text
@@ -1378,9 +1347,6 @@ class TranslationSession:
         self.max_sentences_cjk = _normalize_positive_int(
             subtitle_cfg.get("max_sentences_cjk"), MAX_SENTENCES_CJK
         )
-        self.max_repeat_sentences = _normalize_positive_int(
-            subtitle_cfg.get("max_repeat_sentences"), 1
-        )
         self.seq = 0
         self.pending_seq: Optional[int] = None
         self.chunk_revisions: dict[int, int] = {}
@@ -1528,10 +1494,6 @@ def _ensure_pending_seq(session: TranslationSession) -> int:
         session.pending_seq = session.seq
         session.chunk_revisions[session.pending_seq] = 0
     return session.pending_seq
-
-
-def _current_seq(session: TranslationSession) -> int:
-    return session.pending_seq if session.pending_seq is not None else session.seq
 
 
 def _touch_source_revision(session: TranslationSession, seq: int) -> int:
@@ -1962,7 +1924,7 @@ async def _apply_stt_update(
             websocket,
             {
                 "type": "error",
-                "message": f"STT config error: {type(exc).__name__}",
+                "message": f"Speech recognition config error: {type(exc).__name__}",
             },
         )
         return
@@ -2261,7 +2223,6 @@ async def lifespan(app: FastAPI):
     app.state.server_config = _get_server_config(cfg)
     stt_cfg = cfg.get("stt", {})
     translation_cfg = cfg.get("translation", {})
-    subtitle_cfg = cfg.get("subtitle", {})
     translator_cache_size = _normalize_cache_size(
         translation_cfg.get("translator_cache_size", 4),
         4,
@@ -2283,20 +2244,6 @@ async def lifespan(app: FastAPI):
 
     app.state.default_stt_cfg = stt_cfg
     app.state.translation_cfg = translation_cfg
-    app.state.subtitle_cfg = {
-        "max_chars": _normalize_positive_int(
-            subtitle_cfg.get("max_chars"), MAX_DISPLAY_CHARS
-        ),
-        "max_sentences_default": _normalize_positive_int(
-            subtitle_cfg.get("max_sentences_default"), MAX_SENTENCES_DEFAULT
-        ),
-        "max_sentences_cjk": _normalize_positive_int(
-            subtitle_cfg.get("max_sentences_cjk"), MAX_SENTENCES_CJK
-        ),
-        "max_repeat_sentences": _normalize_positive_int(
-            subtitle_cfg.get("max_repeat_sentences"), 1
-        ),
-    }
     app.state.translator_cache = LRUCache(translator_cache_size)
     app.state.translator_build_lock = asyncio.Lock()
     app.state.translation_scheduler = TranslationScheduler(
@@ -2310,7 +2257,6 @@ async def lifespan(app: FastAPI):
         )
     )
     app.state.model_download_lock = asyncio.Lock()
-    app.state.management_install_lock = asyncio.Lock()
     async def clear_translators():
         translators = app.state.translator_cache.clear()
         for translator in translators:
@@ -2427,89 +2373,7 @@ async def _handle_desktop_management(websocket: WebSocket, payload: dict) -> Non
                     data["profile"] = {**data["profile"], "id": candidate["id"], "api_type": api_type}
                     if resolved_url:
                         data["profile"].update(base_url=resolved_url, auto_complete_endpoint=False)
-            if action == "add_local":
-                model = await asyncio.to_thread(
-                    resolve_hf_model,
-                    str(data.get("repo") or "").strip(),
-                    str(data.get("filename") or "").strip(),
-                )
-                settings_management.register_model(path, model, expected)
-            elif action == "install_local":
-                config, revision = load_snapshot(path)
-                if revision != expected:
-                    raise RevisionConflictError(expected, revision)
-                model = get_model(str(data.get("id") or ""), config)
-                local = config.get("local_llama") or {}
-                root = Path(str(local.get("root") or service.root)).expanduser()
-                kind = "windows-cpu" if int(local.get("gpu_layers", -1)) == 0 else "windows-cuda"
-                loop = asyncio.get_running_loop()
-                cancel = threading.Event()
-
-                def progress(message, done, total):
-                    loop.call_soon_threadsafe(
-                        asyncio.create_task,
-                        _safe_send(websocket, {
-                            "type": "desktop_management_progress", "version": 1,
-                            "message": str(message), "done": int(done), "total": int(total),
-                        }),
-                    )
-
-                async with app.state.management_install_lock:
-                    try:
-                        await asyncio.to_thread(prepare_install, root, model, kind, cancel, progress)
-                    except asyncio.CancelledError:
-                        cancel.set()
-                        raise
-                settings_management.mutate(path, service, "publish_local", {
-                    "id": model.id, "published": True,
-                }, expected)
-            elif action == "install_stt":
-                config, revision = load_snapshot(path)
-                if revision != expected:
-                    raise RevisionConflictError(expected, revision)
-                model_id = str(data.get("id") or "").strip()
-                if model_id not in model_manager.WHISPER_MODEL_URLS:
-                    raise ValueError("Only built-in Whisper models can be downloaded here.")
-                stt = dict(config.get("stt") or {})
-                stt["model"] = model_id
-                stt.pop("model_path", None)
-                if not stt.get("model_cache_dir"):
-                    raise ValueError("Set a speech model folder in the desktop settings first.")
-                loop = asyncio.get_running_loop()
-
-                def progress(done, total):
-                    loop.call_soon_threadsafe(
-                        asyncio.create_task,
-                        _safe_send(websocket, {
-                            "type": "desktop_management_progress", "version": 1,
-                            "message": f"Downloading Whisper {model_id}",
-                            "done": int(done), "total": int(total or 0),
-                        }),
-                    )
-
-                await model_manager.ensure_model_available(
-                    stt, progress_cb=progress,
-                    download_lock=app.state.model_download_lock,
-                )
-            elif action == "remove_stt":
-                config, revision = load_snapshot(path)
-                if revision != expected:
-                    raise RevisionConflictError(expected, revision)
-                model_id = str(data.get("id") or "").strip()
-                if model_id not in model_manager.WHISPER_MODEL_URLS:
-                    raise ValueError("Only built-in Whisper downloads can be removed here.")
-                if str((config.get("stt") or {}).get("model") or "") == model_id:
-                    raise ValueError("Choose another desktop STT default before removing this download.")
-                if service.leases:
-                    raise ValueError("Stop active captures before removing a speech model.")
-                stt = {**(config.get("stt") or {}), "model": model_id, "model_path": None}
-                target = model_manager.resolve_stt_model_target(stt)
-                if target is None or target.is_symlink():
-                    raise ValueError("This speech model is not a managed download.")
-                async with app.state.model_download_lock:
-                    target.unlink(missing_ok=True)
-            else:
-                settings_management.mutate(path, service, action, data, expected)
+            settings_management.mutate(path, service, action, data, expected)
             result = settings_management.snapshot(path, service)
             if saved_profile_id:
                 result["saved_profile_id"] = saved_profile_id
@@ -2908,7 +2772,8 @@ async def _run_selected_session(websocket, stt_cfg, translation_cfg, pending_mes
         stt_session.default_language,
         translator,
         app.state.translation_scheduler,
-        app.state.subtitle_cfg,
+        (getattr(websocket.state, "capture_config", None)
+         or app.state.translation_service.get_config()).get("subtitle", {}),
     )
     reset_requests: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
     results_generator = await audio_processor.create_tasks()
@@ -3018,7 +2883,7 @@ async def _run_selected_session(websocket, stt_cfg, translation_cfg, pending_mes
             except Exception as exc:
                 await _safe_send(
                     websocket,
-                    {"type": "error", "message": f"STT reset failed: {type(exc).__name__}"},
+                    {"type": "error", "message": f"Speech recognition reset failed: {type(exc).__name__}"},
                 )
 
     async def _stt_reset_supervisor() -> None:

@@ -75,6 +75,3 @@ subtitle:
   max_chars: 260
   max_sentences_default: 2
   max_sentences_cjk: 1
-  max_repeat_sentences: 1
-  history_lines: 2
-  show_partial: true

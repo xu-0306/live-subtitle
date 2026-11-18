@@ -352,7 +352,7 @@ async function main() {
   context.STTConnectionSettings = {...context.STTConnectionSettings, getApiKey: async () => ''};
   await waitForCondition(
     () => elements.get('desktopServicesStatus').textContent,
-    (value) => /Synced.*1 services/.test(value),
+    (value) => /Connected to desktop app/.test(value),
     'desktop catalog',
   );
   elements.get('sttModelSizeSelect').value = 'small';
@@ -427,8 +427,11 @@ async function main() {
         'active capture phase',
       );
       assert.equal(elements.get('activeCaptureTitle').textContent, 'Capturing this tab');
-      assert.match(elements.get('activeCaptureSummary').textContent, /future-custom-model/);
+      // The card shows names a person can read, not the internal "local:future-custom-model" id.
+      assert.match(elements.get('activeCaptureSummary').textContent, /Unlisted model/);
+      assert.match(elements.get('activeCaptureSummary').textContent, /Whisper medium/);
       assert.match(elements.get('activeCaptureSummary').textContent, /Te Reo Māori/);
+      assert.doesNotMatch(elements.get('activeCaptureSummary').textContent, /local:|future-custom-model/);
       const removalsBefore = tabMessages.filter((item) => item.message?.type === 'subtitle-remove').length;
       dispatchRuntimeMessage({
         type: 'offscreen-state',
@@ -489,6 +492,27 @@ async function main() {
   elements.get('sttModelSizeSelect').dispatch('change');
   await waitForCondition(() => storage.sttModelMode, 'inherit', 'desktop speech default persistence');
   assert.equal(context.STTPopup.buildNextSettings({ id: 'none', engine: 'noop' }).stt, undefined);
+  // Every choice on its desktop default must still announce a v2 config, or the backend never reloads the saved defaults.
+  const sentConfigs = () => sockets.flatMap((s) => s.sent).filter((value) => {
+    if (typeof value !== 'string') return false;
+    try { return JSON.parse(value).type === 'config'; } catch { return false; }
+  }).map(JSON.parse);
+  elements.get('stopBtn').dispatch('click');
+  await waitForCondition(
+    async () => { await context.STTPopup.refreshCaptureStatus(); return elements.get('activeCaptureTitle').textContent; },
+    'Not capturing',
+    'capture stop before the inherited start',
+  );
+  context.STTPopupState.targetLanguageMode = 'inherit';
+  context.STTPopupState.partialMode = 'inherit';
+  elements.get('translationModelSelect').value = 'desktop-default';
+  elements.get('translationModelSelect').dispatch('change');
+  const configsBeforeInherited = sentConfigs().length;
+  elements.get('startBtn').dispatch('click');
+  await waitForCondition(() => sentConfigs().length, configsBeforeInherited + 1, 'config for an all-inherited capture');
+  const inherited = sentConfigs().at(-1);
+  assert.equal(inherited.version, 2);
+  assert.equal(inherited.stt, undefined);
   console.log('Actual popup -> background -> offscreen -> WebSocket routing passed for custom local and cloud models, arbitrary language, and zh-CN preservation.');
 }
 

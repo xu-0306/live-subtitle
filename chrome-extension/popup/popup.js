@@ -1,7 +1,6 @@
 (function (global) {
   "use strict";
 
-  const isOptionsPage = global.document?.body?.dataset?.page === "options";
   const DEFAULT_WS_URL = "ws://127.0.0.1:8765/asr";
   const KEYS = Object.freeze({
     wsUrl: "wsUrl",
@@ -22,7 +21,6 @@
     showPartial: "subtitleShowPartial",
     legacyModels: "translationModels",
   });
-  const DEFAULT_TARGET_LANGUAGE = "zh-TW";
   const DEFAULT_STT_MODEL = "medium";
   const FALLBACK_STT_MODELS = [
     { id: "tiny", name: "Whisper Tiny", available: true, status: "compatibility" },
@@ -37,6 +35,8 @@
     ["de", "German"], ["es", "Spanish"], ["pt", "Portuguese"], ["it", "Italian"],
     ["ru", "Russian"], ["id", "Indonesian"], ["vi", "Vietnamese"], ["th", "Thai"],
   ];
+  const DESKTOP_DEFAULT = "__desktop-default__";
+  const OTHER_LANGUAGE = "__other-language__";
 
   function $(id) { return global.document?.getElementById?.(id) || null; }
   function storageGet(keys) {
@@ -187,6 +187,7 @@
     sttMode: "inherit",
     targetLanguage: "",
     targetLanguageMode: "inherit",
+    languageOther: false,
     partial: false,
     partialMode: "inherit",
     theme: "system",
@@ -204,14 +205,28 @@
     focusRefreshBound: false,
     initialized: false,
     savedHintUntil: 0,
+    failed: false,
   };
 
+  function updateStatusOverflow(element) {
+    const overflow = element.scrollHeight > element.clientHeight;
+    // The cue means "more text below", so it goes away once the end is in view.
+    if (element.dataset) element.dataset.overflow = String(overflow && element.scrollTop + element.clientHeight < element.scrollHeight - 1);
+    if (overflow) element.setAttribute?.("tabindex", "0");
+    else element.removeAttribute?.("tabindex");
+  }
   function setStatus(message, stateName = "idle") {
     state.savedHintUntil = 0;
     const element = $("status");
     if (!element) return;
     element.textContent = text(message);
     if (element.dataset) element.dataset.state = stateName;
+    updateStatusOverflow(element);
+  }
+  // A failed start/stop stays on screen until the next attempt; the 1 s status poll would otherwise replace it with "Idle".
+  function fail(message) {
+    setStatus(message, "error");
+    state.failed = true;
   }
   function setCatalogStatus(message, stateName = "idle") {
     const element = $("desktopServicesStatus");
@@ -236,14 +251,34 @@
     ) || null;
     const select = $("themeSelect"); if (select) select.value = normalized;
   }
-  function renderLanguageSuggestions() {
-    const list = $("translationLanguages");
-    if (!list || !global.document?.createElement) return;
-    list.innerHTML = "";
-    for (const [id, name] of LANGUAGE_OPTIONS) {
-      const option = global.document.createElement("option"); option.value = id; option.label = name; list.appendChild(option);
-    }
+  function sameAsDesktop(name) { return name ? `Same as desktop · ${name}` : "Same as desktop"; }
+  function languageName(code) {
+    const value = normalizeLanguage(code);
+    return LANGUAGE_OPTIONS.find(([id]) => id.toLowerCase() === value.toLowerCase())?.[1] || value;
   }
+  function serviceName(selection) {
+    if (selection?.kind === "none") return "No translation";
+    if (!selection?.id) return "";
+    const model = (state.catalog?.models || []).find((item) => item.selection?.kind === selection.kind && item.selection?.id === selection.id);
+    return model?.name || text(selection.id);
+  }
+  function speechItem(model) {
+    return model ? sttOptions().find((item) => (item.selection?.model || item.id) === model) : undefined;
+  }
+  function speechName(model) {
+    if (!model) return "";
+    return speechItem(model)?.name || text(model);
+  }
+  function desktopLanguageName() { return languageName(state.catalog?.defaults?.translation?.target_language); }
+  function desktopServiceName() { return serviceName(state.catalog?.defaults?.translation?.selection); }
+  function desktopSpeechModel() { return state.catalog?.defaults?.stt?.model || state.catalog?.defaults?.stt?.selection?.model; }
+  function desktopSpeechName() { return speechName(desktopSpeechModel()); }
+  function desktopPartialName() {
+    const partial = state.catalog?.defaults?.translation?.partial;
+    return typeof partial === "boolean" ? (partial ? "While speaking" : "After each sentence") : "";
+  }
+  // A saved choice the catalog no longer lists is "removed" only when the desktop app actually answered; otherwise it is just unreachable.
+  function staleName(what) { return state.catalogResult?.ok ? `Removed ${what}` : "Saved choice · desktop not reachable"; }
   function builtInSelections() {
     return global.STTDesktopCatalog?.builtInSelections?.() || [
       { id: "desktop-default", name: "Desktop default", engine: "desktop", system: true, available: true, status: "default" },
@@ -266,7 +301,7 @@
       const colon = raw.indexOf(":");
       const kind = colon > 0 && ["local", "profile"].includes(raw.slice(0, colon)) ? raw.slice(0, colon) : "unknown";
       const legacyCompatibility = !global.STTDesktopCatalog && !state.catalogResult;
-      options.push({ id: raw, name: `Selected service · ${raw}`, engine: "desktop", stale: true, available: legacyCompatibility, status: "removed", selection: kind === "unknown" ? undefined : { kind, id: raw.slice(colon + 1) } });
+      options.push({ id: raw, name: staleName("service"), engine: "desktop", stale: true, available: legacyCompatibility, status: "removed", selection: kind === "unknown" ? undefined : { kind, id: raw.slice(colon + 1) } });
     }
     return options;
   }
@@ -278,16 +313,16 @@
     const legacyOnly = state.catalogResult?.upgradeNeeded || state.catalogResult?.legacy?.kind === "legacy";
     if (!options.length && legacyOnly) options.push(...FALLBACK_STT_MODELS);
     if (state.selectedStt && !options.some((entry) => entry.id === state.selectedStt)) {
-      options.push({ id: state.selectedStt, name: `Selected STT model · ${state.selectedStt}`, available: false, stale: true, status: "removed", selection: { model: state.selectedStt } });
+      options.push({ id: state.selectedStt, name: staleName("speech recognition model"), available: false, stale: true, status: "removed", selection: { model: state.selectedStt } });
     }
     return options;
   }
   function optionLabel(item) {
-    let label = text(item.name || item.id);
-    if (item.id === "desktop-default") label = "Desktop default";
-    if (item.id === "none") label = "None · subtitles only";
-    if (item.available === false || item.stale) label += " · unavailable";
-    return label;
+    if (item.id === "desktop-default") return sameAsDesktop(desktopServiceName());
+    if (item.id === "none") return "None · subtitles only";
+    const label = text(item.name || item.id);
+    if (item.stale) return label;
+    return item.available === false ? `${label} · unavailable` : label;
   }
   function renderSelect(id, options, selectedId) {
     const select = $(id); if (!select || !global.document?.createElement) return;
@@ -300,62 +335,82 @@
     }
     if (selectedId) select.value = selectedId;
   }
+  function showHint(id, message, isError = false) {
+    const hint = $(id); if (!hint) return;
+    hint.textContent = message;
+    hint.hidden = !message;
+    if (hint.dataset) hint.dataset.state = isError ? "error" : "ready";
+  }
+  function renderApplyHint(running) {
+    const hint = $("applyHint");
+    if (hint) hint.textContent = running
+      ? "A capture is running. Stop and start it again to use these choices."
+      : "Changes apply when you start capture.";
+  }
+  function renderLanguage() {
+    const override = state.targetLanguageMode === "override";
+    const known = LANGUAGE_OPTIONS.find(([id]) => id.toLowerCase() === state.targetLanguage.toLowerCase())?.[0];
+    const other = override && (state.languageOther || !known);
+    renderSelect("translationLanguageSelect", [
+      { id: DESKTOP_DEFAULT, name: sameAsDesktop(desktopLanguageName()), available: true },
+      ...LANGUAGE_OPTIONS.map(([id, name]) => ({ id, name, available: true })),
+      { id: OTHER_LANGUAGE, name: "Other language…", available: true },
+    ], !override ? DESKTOP_DEFAULT : other ? OTHER_LANGUAGE : known);
+    const custom = $("translationLanguageCustom");
+    if (custom) {
+      custom.hidden = !other;
+      if (other && normalizeLanguage(custom.value) !== state.targetLanguage) custom.value = state.targetLanguage;
+    }
+    const hint = $("translationLanguageHint");
+    if (hint) hint.textContent = override
+      ? "Used for every tab in this browser until you choose Same as desktop."
+      : "Follows the language set in the desktop app.";
+  }
   function renderChoices() {
     renderSelect("translationModelSelect", modelOptions(), state.selectedTranslation);
-    const backendStt = state.catalog?.defaults?.stt?.model || state.catalog?.defaults?.stt?.selection?.model;
-    const speechModels = sttOptions();
-    const backendSttItem = speechModels.find((item) => (item.selection?.model || item.id) === backendStt);
-    const desktopSpeechLabel = backendStt
-      ? `Desktop default · ${backendSttItem?.name || backendStt}`
-      : "Desktop default";
     const sttItems = [
-      { id: "__desktop-default__", name: desktopSpeechLabel, available: true, status: "default" },
-      ...speechModels,
+      // The desktop app may default to a model it has not downloaded yet; flag it like any other missing model.
+      { id: DESKTOP_DEFAULT, name: sameAsDesktop(desktopSpeechName()), available: speechItem(desktopSpeechModel())?.available !== false },
+      ...sttOptions(),
     ];
-    const sttSelection = state.sttMode === "override" && state.selectedStt
-      ? state.selectedStt
-      : "__desktop-default__";
+    const sttSelection = state.sttMode === "override" && state.selectedStt ? state.selectedStt : DESKTOP_DEFAULT;
     renderSelect("sttModelSizeSelect", sttItems, sttSelection);
-    const language = $("translationLanguageSelect"); if (language) language.value = state.targetLanguage;
-    const languageMode = $("translationLanguageModeSelect"); if (languageMode) languageMode.value = state.targetLanguageMode;
-    const sttMode = $("sttModelModeSelect"); if (sttMode) sttMode.value = state.sttMode;
-    if (language) {
-      const inherited = state.targetLanguageMode !== "override";
-      language.disabled = inherited;
-      language.style.display = inherited && !isOptionsPage ? "none" : "";
-      language.placeholder = inherited ? "Inherited from desktop" : "Language name or code, e.g. es-MX or Hindi";
-      const hint = language.parentElement?.querySelector?.(".field-hint");
-      if (hint) hint.style.display = inherited && !isOptionsPage ? "none" : "";
-    }
-    const selectedSpeech = sttItems.find((item) => item.id === sttSelection);
-    const sttHint = $("sttSelectionHint");
-    if (sttHint) {
-      sttHint.textContent = sttSelection === "__desktop-default__"
-        ? "Follows the saved desktop default. Changes apply to the next capture."
-        : selectedSpeech?.available === false
-          ? "This STT model is not installed. Download it in the desktop app."
-          : "Pinned for the next capture. The current capture is not changed.";
-      if (sttHint.dataset) sttHint.dataset.state = selectedSpeech?.available === false ? "error" : "ready";
-    }
+    renderLanguage();
+    const speechMissing = sttItems.find((item) => item.id === sttSelection)?.available === false;
+    showHint("sttSelectionHint", speechMissing ? "This speech recognition model is not installed. Download it in the desktop app." : "", speechMissing);
     const behavior = $("translationBehaviorSelect");
-    if (behavior) behavior.value = state.partialMode === "inherit" ? "inherit" : (state.partial ? "partial" : "final");
+    if (behavior) {
+      if (behavior.options?.[0]) behavior.options[0].textContent = sameAsDesktop(desktopPartialName());
+      behavior.value = state.partialMode === "inherit" ? "inherit" : (state.partial ? "partial" : "final");
+    }
     const selected = modelOptions().find((item) => item.id === state.selectedTranslation);
-    const hint = $("translationSelectionHint");
-    if (hint) hint.textContent = selected?.available === false ? "This service is unavailable. Refresh the desktop app before starting." : selected?.id === "none" ? "Subtitles only." : "Applies to the next capture.";
+    const removed = Boolean(selected?.stale && state.catalogResult?.ok);
+    const unavailable = selected?.available === false;
+    showHint(
+      "translationSelectionHint",
+      removed ? "This service was removed in the desktop app. Pick another."
+        : unavailable ? "This service is unavailable. Check the desktop app, then press ↻."
+          : selected?.id === "none" ? "Subtitles only, no translation." : "",
+      removed || unavailable,
+    );
+    renderApplyHint(Boolean(state.statusSnapshot?.running));
   }
   function renderActiveSnapshot(snapshot, fallbackStatus) {
     const title = $("activeCaptureTitle"); const phase = $("activeCapturePhase"); const summary = $("activeCaptureSummary"); const occupancy = $("occupancySummary");
     const active = snapshot && typeof snapshot === "object" ? snapshot : null;
     const running = Boolean(active?.running || active?.capturing);
+    renderApplyHint(running);
     if (title) title.textContent = running ? (active.name || "Capturing this tab") : "Not capturing";
     if (phase) phase.textContent = text(active?.phase || fallbackStatus || (running ? "Capturing" : "Idle"));
     if (summary) {
-      if (running && (active.selection || active.target_language || active.stt)) {
-        const selection = active.selection ? `${active.selection.kind || "service"}:${active.selection.id || "default"}` : "Desktop default";
-        const language = active.target_language || "Desktop default language";
-        const speech = active.stt?.model || "Desktop default speech";
-        summary.textContent = `${selection} · ${speech} · ${language}`;
-      } else summary.textContent = running ? "This tab is using its capture settings snapshot." : "Start capture to pin the exact model and language used by this tab.";
+      const names = running && (active.selection || active.target_language || active.stt)
+        ? [
+          active.selection ? serviceName(active.selection) : desktopServiceName(),
+          active.stt?.model ? speechName(active.stt.model) : desktopSpeechName(),
+          active.target_language ? languageName(active.target_language) : desktopLanguageName(),
+        ].filter(Boolean).join(" · ")
+        : "";
+      summary.textContent = names || (running ? "This tab is using its own capture settings." : "Start capture to see what this tab is using.");
     }
     if (occupancy) {
       const count = Number(active?.captures ?? active?.capture_count ?? 0);
@@ -366,17 +421,13 @@
     state.catalogResult = result || null;
     if (result?.catalog?.kind === "v2") state.catalog = result.catalog;
     if (result?.ok && result.catalog?.kind === "v2") {
-      const catalog = result.catalog;
-      const revision = $("catalogRevision"); if (revision) revision.textContent = "Synced";
-      setCatalogStatus(`Synced · ${catalog.models.length} services`, "ready");
+      setCatalogStatus("Connected to desktop app", "ready");
     } else if (result?.upgradeNeeded) {
-      setCatalogStatus("Upgrade needed · desktop server is older", "warning");
-      const revision = $("catalogRevision"); if (revision) revision.textContent = "Upgrade needed";
+      setCatalogStatus("Desktop app is too old · please update it", "warning");
     } else if (result?.offline) {
       const stale = Boolean(state.catalog || result.cached);
       if (result.cached?.kind === "v2" && !state.catalog) state.catalog = result.cached;
-      setCatalogStatus(stale ? "Offline · showing last known choices" : "Offline · connect desktop server", "offline");
-      const revision = $("catalogRevision"); if (revision) revision.textContent = stale ? "Stale" : "Offline";
+      setCatalogStatus(stale ? "Desktop app not reachable · showing saved choices" : "Desktop app not found · start it, then press ↻", "offline");
     }
     renderChoices();
   }
@@ -391,16 +442,13 @@
     renderChoices();
   }
   async function refreshDesktopServices(options = {}) {
-    const ws = ($(KEYS.wsUrl)?.value || state.wsUrl || DEFAULT_WS_URL).trim() || DEFAULT_WS_URL;
+    const ws = (state.wsUrl || DEFAULT_WS_URL).trim() || DEFAULT_WS_URL;
     state.wsUrl = ws;
     if (!options.manual && Date.now() < state.catalogRetryAfter) return state.catalogResult;
     if (state.catalogRefreshPromise && state.catalogRefreshUrl === ws) return state.catalogRefreshPromise;
     state.catalogRefreshUrl = ws;
     const shouldAnnounce = Boolean(options.manual || !state.catalogResult || state.catalogResult.offline || modelOptions().some((item) => item.engine === "desktop" && item.stale));
-    if (shouldAnnounce) {
-      const staleChoices = modelOptions().filter((item) => item.engine === "desktop" && item.stale).length;
-      setCatalogStatus(staleChoices ? `${staleChoices} desktop choices · syncing…` : "Syncing desktop catalog…", "syncing");
-    }
+    if (shouldAnnounce) setCatalogStatus("Connecting to desktop app…", "syncing");
     const request = (async () => {
       const result = await state.catalogClient.refresh(ws);
       if (result?.ignored) return result;
@@ -446,8 +494,8 @@
     const starting = ["starting", "loading", "connecting", "initializing", "stopping"].includes(normalizedPhase);
     setButtons(capturing, starting);
     const statusState = starting ? "starting" : capturing ? "active" : /error|offline|disconnect/i.test(phase) ? "error" : "idle";
-    if (Date.now() >= state.savedHintUntil || statusState === "error") setStatus(phase, statusState);
-    const indicator = $("connectionIndicator"); if (indicator?.dataset) indicator.dataset.state = capturing ? "active" : response.connected === false ? "error" : "idle";
+    if (capturing || starting) state.failed = false;
+    if (!state.failed && (Date.now() >= state.savedHintUntil || statusState === "error")) setStatus(phase, statusState);
     const snapshot = response.snapshot || response.captureSnapshot || null;
     const localOccupancy = Array.isArray(response.occupancy) ? response.occupancy.length : 0;
     const catalogOccupancy = Number(state.catalog?.active?.captures || 0);
@@ -499,36 +547,37 @@
     return { version: 2, ...(Object.keys(translation).length ? { translation } : {}), ...(stt ? { stt } : {}), snapshot };
   }
   async function startCapture() {
+    state.failed = false;
     const tabId = await getActiveTabId();
-    if (tabId === null || tabId === undefined) { setStatus("No active tab", "error"); return; }
+    if (tabId === null || tabId === undefined) { fail("No active tab"); return; }
     const model = modelOptions().find((item) => item.id === state.selectedTranslation) || modelOptions()[0];
-    if (!model) { setStatus("Choose a translation service first", "error"); return; }
-    if (model.available === false) { setStatus("Selected service is unavailable. Refresh the desktop app.", "error"); return; }
+    if (!model) { fail("Choose a translation service first"); return; }
+    if (model.available === false) { fail("This service is unavailable. Check the desktop app, then press ↻."); return; }
+    if (state.targetLanguageMode === "override" && !state.targetLanguage) { fail("Type a target language, or pick Same as desktop."); return; }
     if (state.sttMode === "override") {
-      if (!state.selectedStt) { setStatus("Choose an STT model or inherit the desktop default", "error"); return; }
+      if (!state.selectedStt) { fail("Choose a speech recognition model, or pick Same as desktop."); return; }
       const selectedSpeech = sttOptions().find((entry) => entry.id === state.selectedStt);
-      if (selectedSpeech?.available === false && (state.catalogResult?.catalog?.kind === "v2" || global.STTDesktopCatalog)) { setStatus("Selected STT model is unavailable. Refresh the desktop app.", "error"); return; }
+      if (selectedSpeech?.available === false && (state.catalogResult?.catalog?.kind === "v2" || global.STTDesktopCatalog)) { fail("This speech recognition model is unavailable. Check the desktop app, then press ↻."); return; }
     }
     let apiKey = "";
     if (model.legacy && model.engine === "openai" && global.STTConnectionSettings?.getApiKey) {
       try { apiKey = await global.STTConnectionSettings.getApiKey(model.id); }
-      catch (error) { setStatus(`Could not read saved service key: ${error?.message || error}`, "error"); return; }
+      catch (error) { fail(`Could not read saved service key: ${error?.message || error}`); return; }
     }
-    const wsUrl = ($(KEYS.wsUrl)?.value || state.wsUrl || DEFAULT_WS_URL).trim() || DEFAULT_WS_URL;
+    const wsUrl = (state.wsUrl || DEFAULT_WS_URL).trim() || DEFAULT_WS_URL;
     const settings = buildNextSettings(model, apiKey);
     setStatus("Starting…", "starting"); setButtons(false, true);
-    try { await storageSet({ [KEYS.wsUrl]: wsUrl }); }
-    catch (error) { setStatus(`Could not save: ${error.message || error}`, "error"); setButtons(false); return; }
     const response = await sendRuntime({ type: "popup-start", tabId, wsUrl, settings });
-    if (!response?.ok) { setStatus(`Could not start capture: ${response?.error || "extension unavailable"}`, "error"); setButtons(false); return; }
+    if (!response?.ok) { fail(`Could not start capture: ${response?.error || "extension unavailable"}`); setButtons(false); return; }
     setStatus("Connecting…", "starting");
     await refreshCaptureStatus();
   }
   async function stopCapture() {
+    state.failed = false;
     const tabId = await getActiveTabId();
     setStatus("Stopping…", "starting"); setButtons(true, true);
     const response = await sendRuntime({ type: "popup-stop", tabId });
-    if (!response?.ok) { setStatus(`Could not stop capture: ${response?.error || "extension unavailable"}`, "error"); return; }
+    if (!response?.ok) { fail(`Could not stop capture: ${response?.error || "extension unavailable"}`); return; }
     setStatus("Stopped", "idle"); setButtons(false); await refreshCaptureStatus();
   }
   function persistTranslationSelection() {
@@ -541,7 +590,7 @@
   function persistSttSelection() {
     const stt = $("sttModelSizeSelect");
     if (!stt) return;
-    if (stt.value === "__desktop-default__") {
+    if (stt.value === DESKTOP_DEFAULT) {
       state.sttMode = "inherit";
       persistSettings({ [KEYS.sttMode]: "inherit" });
     } else {
@@ -551,6 +600,19 @@
     }
     renderChoices();
   }
+  function persistLanguageSelection() {
+    const value = $("translationLanguageSelect")?.value || DESKTOP_DEFAULT;
+    state.languageOther = value === OTHER_LANGUAGE;
+    if (value === DESKTOP_DEFAULT) {
+      state.targetLanguageMode = "inherit";
+    } else {
+      state.targetLanguageMode = "override";
+      state.targetLanguage = state.languageOther ? "" : normalizeLanguage(value);
+    }
+    persistSettings({ [KEYS.languageMode]: state.targetLanguageMode, [KEYS.language]: state.targetLanguage });
+    renderChoices();
+    if (state.languageOther) $("translationLanguageCustom")?.focus?.();
+  }
   function persistSelection() {
     persistTranslationSelection();
     persistSttSelection();
@@ -558,35 +620,26 @@
   function wireEvents() {
     $("translationModelSelect")?.addEventListener("change", persistTranslationSelection);
     $("sttModelSizeSelect")?.addEventListener("change", persistSttSelection);
-    $("sttModelModeSelect")?.addEventListener("change", (event) => { state.sttMode = event.target.value === "override" ? "override" : "inherit"; persistSettings({ [KEYS.sttMode]: state.sttMode }); renderChoices(); });
-    $("translationLanguageModeSelect")?.addEventListener("change", (event) => { state.targetLanguageMode = event.target.value === "override" ? "override" : "inherit"; persistSettings({ [KEYS.languageMode]: state.targetLanguageMode }); renderChoices(); });
-    const updateLanguage = (event) => { const input = event?.target || $("translationLanguageSelect"); state.targetLanguage = normalizeLanguage(input?.value); persistSettings({ [KEYS.language]: state.targetLanguage }); };
-    $("translationLanguageSelect")?.addEventListener("input", updateLanguage);
-    $("translationLanguageSelect")?.addEventListener("change", updateLanguage);
-    $("translationBehaviorSelect")?.addEventListener("change", (event) => { const value = event.target.value; state.partialMode = value === "inherit" ? "inherit" : "override"; state.partial = value === "partial"; persistSettings({ [KEYS.partialMode]: state.partialMode, [KEYS.partial]: state.partial }); renderChoices(); });
-    $("wsUrl")?.addEventListener("change", (event) => {
-      const nextUrl = event.target.value.trim() || DEFAULT_WS_URL;
-      if (nextUrl !== state.wsUrl) resetCatalogForEndpoint();
-      state.wsUrl = nextUrl;
-      persistSettings({ [KEYS.wsUrl]: state.wsUrl }, true);
-      refreshDesktopServices({ manual: true });
+    $("translationLanguageSelect")?.addEventListener("change", persistLanguageSelection);
+    $("translationLanguageCustom")?.addEventListener("input", (event) => {
+      state.targetLanguage = normalizeLanguage(event.target.value);
+      persistSettings({ [KEYS.language]: state.targetLanguage });
     });
+    $("translationBehaviorSelect")?.addEventListener("change", (event) => { const value = event.target.value; state.partialMode = value === "inherit" ? "inherit" : "override"; state.partial = value === "partial"; persistSettings({ [KEYS.partialMode]: state.partialMode, [KEYS.partial]: state.partial }); renderChoices(); });
     $("refreshDesktopServices")?.addEventListener("click", () => refreshDesktopServices({ manual: true }));
     $("startBtn")?.addEventListener("click", startCapture);
     $("stopBtn")?.addEventListener("click", stopCapture);
     $("openSettingsBtn")?.addEventListener("click", () => global.chrome?.runtime?.openOptionsPage?.());
     $("themeSelect")?.addEventListener("change", (event) => { applyThemePreference(event.target.value); persistSettings({ [KEYS.theme]: state.theme }, true); });
-    if (!isOptionsPage) {
-      const bindFontScale = (id, outputId, key) => {
-        const input = $(id);
-        input?.addEventListener("input", () => {
-          const scale = renderFontScale(id, outputId, input.value);
-          persistSettings({ [key]: scale }, true);
-        });
-      };
-      bindFontScale("subtitleOriginalSize", "subtitleOriginalSizeValue", KEYS.originalScale);
-      bindFontScale("subtitleTranslatedSize", "subtitleTranslatedSizeValue", KEYS.translatedScale);
-    }
+    const bindFontScale = (id, outputId, key) => {
+      const input = $(id);
+      input?.addEventListener("input", () => {
+        const scale = renderFontScale(id, outputId, input.value);
+        persistSettings({ [key]: scale }, true);
+      });
+    };
+    bindFontScale("subtitleOriginalSize", "subtitleOriginalSizeValue", KEYS.originalScale);
+    bindFontScale("subtitleTranslatedSize", "subtitleTranslatedSizeValue", KEYS.translatedScale);
     if (global.chrome?.storage?.onChanged?.addListener) {
       global.chrome.storage.onChanged.addListener((changes, areaName) => {
         if (areaName && areaName !== "local") return;
@@ -597,7 +650,6 @@
             const nextUrl = text(value || DEFAULT_WS_URL);
             const changed = nextUrl !== state.wsUrl;
             state.wsUrl = nextUrl;
-            const input = $("wsUrl"); if (input) input.value = state.wsUrl;
             if (changed) {
               // A catalog is scoped to its URL and server identity. Clear the
               // old endpoint immediately so its choices cannot be selected
@@ -636,8 +688,7 @@
     state.partial = Boolean(data[KEYS.partial]);
     state.partialMode = data[KEYS.partialMode] === "override" || (hasOwn(data, KEYS.partial) && !hasOwn(data, KEYS.partialMode)) ? "override" : "inherit";
     applyThemePreference(data[KEYS.theme] || "system");
-    const ws = $("wsUrl"); if (ws) ws.value = state.wsUrl;
-    renderLanguageSuggestions(); renderChoices();
+    renderChoices();
     const appearance = {
       original: data[KEYS.originalScale] ?? data[KEYS.legacyScale] ?? 1,
       translated: data[KEYS.translatedScale] ?? data[KEYS.legacyScale] ?? 1,
@@ -652,6 +703,9 @@
     state.initialized = true;
   }
   function init() {
+    const banner = $("status");
+    if (banner && global.ResizeObserver) new global.ResizeObserver(() => updateStatusOverflow(banner)).observe(banner);
+    banner?.addEventListener("scroll", () => updateStatusOverflow(banner), { passive: true });
     wireEvents();
     loadState().then(() => {
       // Catalog and status are independent. A slow/failed catalog must never
@@ -663,7 +717,7 @@
     }).catch((error) => setStatus(`Settings error: ${error?.message || error}`, "error"));
   }
 
-  if (!isOptionsPage) init();
+  init();
   global.STTPopupState = state;
   global.STTPopup = Object.freeze({
     state,

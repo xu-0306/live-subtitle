@@ -23,69 +23,54 @@
       <section class="connection-card card">
         <div class="connection-row">
           <div class="connection-copy">
-            <p class="eyebrow">Connection</p>
             <h1>Capture this tab</h1>
+            <div class="sync-line" role="status" aria-live="polite">
+              <span id="catalogStateDot" class="mini-dot" data-state="idle" aria-hidden="true"></span>
+              <span id="desktopServicesStatus">Connecting to desktop app…</span>
+            </div>
           </div>
-          <input id="wsUrl" class="text-control" type="url" inputmode="url" spellcheck="false" autocomplete="off" aria-label="WebSocket URL" placeholder="ws://127.0.0.1:8765/asr" />
-          <span id="connectionIndicator" class="status-dot" data-state="idle" aria-hidden="true"></span>
+          <button id="refreshDesktopServices" class="refresh-button" type="button" title="Check the desktop app again" aria-label="Check the desktop app again">↻</button>
         </div>
       </section>
 
       <section class="choices-card card">
         <div class="section-heading">
           <div><h2>Next capture</h2></div>
-          <button id="refreshDesktopServices" class="refresh-button" type="button" title="Refresh desktop catalog" aria-label="Refresh desktop catalog">↻</button>
         </div>
-        <div class="sync-line" role="status" aria-live="polite">
-          <span id="catalogStateDot" class="mini-dot" data-state="idle" aria-hidden="true"></span>
-          <span id="desktopServicesStatus">Waiting for desktop catalog</span>
-        </div>
+        <p id="applyHint" class="field-hint">Changes apply when you start capture.</p>
 
         <div class="field">
           <label class="field-label" for="translationModelSelect">Translation service</label>
           <select id="translationModelSelect" class="native-control"></select>
-          <p id="translationSelectionHint" class="field-hint">Use the desktop default or choose a managed service.</p>
+          <p id="translationSelectionHint" class="field-hint" hidden></p>
         </div>
 
         <div class="field">
-          <label class="field-label" for="sttModelSizeSelect">STT model</label>
+          <label class="field-label" for="sttModelSizeSelect">Speech recognition model</label>
           <select id="sttModelSizeSelect" class="native-control"></select>
-          <p id="sttSelectionHint" class="field-hint">Use the desktop default or choose an installed model for the next capture.</p>
+          <p id="sttSelectionHint" class="field-hint" hidden></p>
         </div>
 
-        <div class="field language-field">
-          <div class="label-with-mode">
-            <label class="field-label" for="translationLanguageSelect">Target language</label>
-            <select id="translationLanguageModeSelect" class="inline-mode" aria-label="Target language scope">
-              <option value="inherit">Desktop default</option>
-              <option value="override">This tab</option>
-            </select>
-          </div>
-          <input id="translationLanguageSelect" class="text-control" type="text" list="translationLanguages" maxlength="128" spellcheck="false" autocomplete="off" placeholder="Language name or code, e.g. es-MX or Hindi" />
-          <datalist id="translationLanguages"></datalist>
-          <p class="field-hint">Choose a language or type your own.</p>
+        <div class="field">
+          <label class="field-label" for="translationLanguageSelect">Target language</label>
+          <select id="translationLanguageSelect" class="native-control"></select>
+          <input id="translationLanguageCustom" class="text-control" type="text" maxlength="128" spellcheck="false" autocomplete="off" aria-label="Other target language" placeholder="Language name or code, e.g. es-MX or Hindi" hidden />
+          <p id="translationLanguageHint" class="field-hint"></p>
         </div>
 
-        <div class="two-column">
-          <div class="field">
-            <label class="field-label" for="translationBehaviorSelect">Translation partials</label>
-            <select id="translationBehaviorSelect" class="native-control">
-              <option value="inherit">Desktop default</option>
-              <option value="final">Final only</option>
-              <option value="partial">Partial and final</option>
-            </select>
-          </div>
-          <div class="field compact-note" aria-label="Settings apply timing">
-            <span class="field-label">Applies</span>
-            <span>Next capture</span>
-          </div>
+        <div class="field">
+          <label class="field-label" for="translationBehaviorSelect">Translation timing</label>
+          <select id="translationBehaviorSelect" class="native-control">
+            <option value="inherit">Same as desktop</option>
+            <option value="final">After each sentence</option>
+            <option value="partial">While speaking</option>
+          </select>
         </div>
       </section>
 
       <section class="font-card card" aria-labelledby="subtitleSizeHeading">
         <div class="section-heading compact">
           <div>
-            <p class="eyebrow">Subtitle appearance</p>
             <h2 id="subtitleSizeHeading">Text size</h2>
           </div>
           <span class="section-badge">Live</span>
@@ -112,7 +97,6 @@
       <section class="active-card card" aria-live="polite">
         <div class="section-heading compact">
           <div>
-            <p class="eyebrow">Current tab</p>
             <h2 id="activeCaptureTitle">Not capturing</h2>
           </div>
           <span id="activeCapturePhase" class="phase-label">Idle</span>

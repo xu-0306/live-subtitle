@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from backend import server, settings_management
 from backend.config_store import RevisionConflictError, load_snapshot, save_config
-from backend.local_catalog import Artifact, ModelSpec
 from backend.translation_service import TranslationService
 
 
@@ -40,6 +39,7 @@ def test_management_profile_crud_and_revision_keep_gui_snapshot_in_sync(tmp_path
     visible = settings_management.snapshot(path, service)
     assert visible["revision"] == revision
     assert visible["profiles"][0]["has_api_key"] is True
+    assert [item["id"] for item in visible["models"]] == ["profile:office"]
     assert "private-key" not in json.dumps(visible)
     with pytest.raises(RevisionConflictError):
         settings_management.mutate(path, service, "delete_profile", {"id": "office"}, first["revision"])
@@ -68,26 +68,6 @@ def test_management_profile_crud_and_revision_keep_gui_snapshot_in_sync(tmp_path
     assert config["translation"]["default_selection"] == {"kind": "none", "id": "none"}
 
 
-def test_custom_gguf_entry_can_be_edited_published_and_removed_without_deleting_files(tmp_path: Path) -> None:
-    path, service = _fixture(tmp_path)
-    model = ModelSpec("custom-gguf", "Custom GGUF", "owner/repo", "a" * 40,
-                      (Artifact("model.gguf", "https://huggingface.co/owner/repo/file", 3, "b" * 64),),
-                      1024)
-    revision = settings_management.snapshot(path, service)["revision"]
-    revision = settings_management.register_model(path, model, revision)
-    target = service.root / "models" / model.id / "model.gguf"
-    target.parent.mkdir(parents=True)
-    target.write_bytes(b"abc")
-    revision = settings_management.mutate(path, service, "publish_local", {"id": model.id, "published": True}, revision)
-    revision = settings_management.mutate(path, service, "rename_local", {"id": model.id, "name": "Renamed", "notes": "Ready"}, revision)
-    result = settings_management.snapshot(path, service)
-    assert next(item for item in result["local_models"] if item["id"] == model.id)["published"] is True
-    assert next(item for item in result["local_models"] if item["id"] == model.id)["name"] == "Renamed"
-    settings_management.mutate(path, service, "delete_local", {"id": model.id}, revision)
-    assert target.read_bytes() == b"abc"
-    assert model.id not in {item.id for item in settings_management.list_models(load_snapshot(path)[0])}
-
-
 def test_management_websocket_exposes_same_revision_and_rejects_web_origin(tmp_path: Path, monkeypatch) -> None:
     path, _ = _fixture(tmp_path)
     monkeypatch.setenv("STT_CONFIG_PATH", str(path))
@@ -97,20 +77,23 @@ def test_management_websocket_exposes_same_revision_and_rejects_web_origin(tmp_p
             websocket.send_json({"type": "desktop_management", "version": 1, "action": "read"})
             result = websocket.receive_json()
         assert result["ok"] and result["revision"] == load_snapshot(path)[1]
-        model = ModelSpec("browser-added", "Browser GGUF", "owner/repo", "a" * 40,
-                          (Artifact("browser.gguf", "https://huggingface.co/owner/repo/file", 3, "b" * 64),),
-                          1024)
-        monkeypatch.setattr(server, "resolve_hf_model", lambda repo, filename: model)
-        with client.websocket_connect("/asr", headers={"origin": "chrome-extension://example"}) as websocket:
-            websocket.send_json({"type": "desktop_management", "version": 1,
-                                 "action": "add_local", "expected_revision": result["revision"],
-                                 "data": {"repo": "owner/repo", "filename": "browser.gguf"}})
-            added = websocket.receive_json()
-        assert added["ok"] and any(item["id"] == model.id for item in added["local_models"])
         with client.websocket_connect("/asr", headers={"origin": "https://example.com"}) as websocket:
             websocket.send_json({"type": "desktop_management", "version": 1, "action": "read"})
             rejected = websocket.receive_json()
         assert rejected["ok"] is False
+
+
+def test_management_reports_a_corrupt_config_without_quoting_it(tmp_path: Path, monkeypatch) -> None:
+    path, _ = _fixture(tmp_path)
+    monkeypatch.setenv("STT_CONFIG_PATH", str(path))
+    with TestClient(server.app, client=("127.0.0.1", 55102)) as client:
+        path.write_text("translation:\n  api_key: sk-private\n  broken: [unclosed\n", encoding="utf-8")
+        with client.websocket_connect("/asr", headers={"origin": "chrome-extension://example"}) as socket:
+            socket.send_json({"type": "desktop_management", "version": 1, "action": "read"})
+            result = socket.receive_json()
+    assert result["ok"] is False
+    assert "not valid YAML" in result["error"]
+    assert "sk-private" not in result["error"]
 
 
 def test_management_generates_service_id_and_saves_detected_format_for_gui(tmp_path: Path, monkeypatch) -> None:

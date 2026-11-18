@@ -75,7 +75,7 @@ const chrome = {
   },
   storage: {
     local: {
-      get(_keys, callback) { callback({}); },
+      get(_keys, callback) { callback({ sttSubtitleOverlaySize: { width: 500, height: 200 } }); },
       set() {},
     },
   },
@@ -159,6 +159,18 @@ test("capture stop fades the overlay and late status cannot revive it", async ()
 
   await new Promise((resolve) => setTimeout(resolve, 250));
   assert.equal(body.children.includes(overlay), false, "overlay is removed after the fade finishes");
+});
+
+test("a recreated card keeps the remembered size and the card follows the newest line", async () => {
+  await new Promise((resolve) => setTimeout(resolve, 250)); // let the previous fade finish
+  sendMessage({ type: "subtitle-start" });
+  sendMessage({ type: "subtitle-status", message: "Capture ready" });
+  const card = body.children[0].children[0];
+  assert.equal(card.style.width, "500px", "a new card must reapply the size the user chose");
+  assert.equal(card.style.height, "200px");
+  card.scrollHeight = 480;
+  subtitle("fresh line", "", 40, true);
+  assert.equal(card.scrollTop, 480, "new text must scroll into view instead of hiding below the card");
 });
 
 test("a new capture cancels an in-flight overlay removal", async () => {

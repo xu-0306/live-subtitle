@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import re
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -14,7 +15,7 @@ from qfluentwidgets import SpinBox
 
 from backend import config_store
 from gui import config_manager, fluent_kit
-from gui.app import MainWindow
+from gui.app import LANGUAGE_OPTIONS, MainWindow
 from gui.wheel_guard import protect_wheel_controls
 
 
@@ -77,6 +78,29 @@ def test_service_draft_save_discard_and_draft_test(window):
     assert "Unsaved" not in catalog.profile_list.item(0).text()
 
 
+def test_service_list_details_and_availability(window):
+    catalog = window.service_catalog
+    assert catalog.profile_list.item(0).text() == "Office\nold-model · example.test"
+    assert catalog.availability_label.text() == "Ready to test"
+    assert catalog.profile_list.item(1).text() == "Backup\nNeeds setup · backup"
+    catalog.model_input.clear()
+    assert catalog.profile_list.item(0).text().endswith(" · Unsaved")
+    profiles = [
+        ({"kind": "api", "model": "m", "base_url": "http://user:secret@localhost:11434/v1"}, "Ready to test"),
+        ({"kind": "api", "model": "m"}, "Needs setup"),
+        ({"kind": "nllb", "model": "m", "installed": True}, "Installed"),
+        ({"kind": "nllb", "available": False}, "Missing"),
+    ]
+    for profile, state in profiles:
+        assert catalog._profile_state(profile) == state
+    catalog._profiles = [dict(id=str(i), name=str(i), **profile) for i, (profile, _) in enumerate(profiles)]
+    catalog._active_index = -1
+    catalog._refresh_list()
+    assert catalog.profile_list.item(0).text() == "0\nm · localhost:11434"
+    assert catalog.profile_list.item(2).text() == "2\nm"
+    assert catalog.profile_list.item(3).text() == "3\nMissing · No model set"
+
+
 @pytest.mark.parametrize("answer", [QtWidgets.QMessageBox.Save, QtWidgets.QMessageBox.Discard, QtWidgets.QMessageBox.Cancel])
 def test_switch_service_guards_draft(window, monkeypatch, answer):
     catalog = window.service_catalog
@@ -100,7 +124,7 @@ def test_type_change_has_new_id_and_clears_provider_fields(window, monkeypatch):
     assert re.fullmatch(r"service-[0-9a-f]{8}", identity)
     assert catalog.endpoint_input.text() == catalog.model_input.text() == catalog.api_key_input.text() == ""
     assert catalog._profiles[0]["id"] == "api-one"
-    assert "API" in catalog.profile_list.item(0).text()
+    assert catalog.profile_list.item(0).text() == "Office\nold-model · example.test · Unsaved"
     catalog.name_input.setText("Local")
     assert catalog.id_input.text() == identity
     assert catalog.save_selected()
@@ -205,6 +229,73 @@ def test_reset_is_page_scoped_and_keeps_saved_services(window, monkeypatch, page
         assert window.service_catalog.model_input.text() == "pending-service"
     persisted = config_store.load_snapshot(window.config_path)[0]
     assert persisted["translation"]["service_profiles"] == saved["translation"]["service_profiles"]
+
+
+def test_target_language_options_match_extension():
+    popup = (Path(__file__).resolve().parents[1] / "chrome-extension/popup/popup.js").read_text(encoding="utf-8")
+    options = re.search(r"const LANGUAGE_OPTIONS\s*=\s*\[(.*?)\];", popup, re.DOTALL)
+    assert options is not None
+    assert re.findall(r'\["([^"]+)",\s*"([^"]+)"\]', options.group(1)) == list(LANGUAGE_OPTIONS)
+
+
+def _config_with_target(window, translation, local):
+    config = copy.deepcopy(window.config)
+    config["translation"].pop("target_language", None)
+    config["translation"].update(translation)
+    config["local_llama"] = dict(local)
+    return config
+
+
+def test_target_language_lives_on_the_services_page_and_keeps_any_value(window):
+    combo = window.target_language_input
+    assert [(combo.itemData(i), combo.itemText(i)) for i in range(combo.count())] == list(LANGUAGE_OPTIONS)
+    texts = lambda page: [label.text() for label in window.pages[page].findChildren(QtWidgets.QLabel)]
+    assert "Target language" in texts(5)
+    assert not any("target language" in text.lower() for text in texts(1))
+    cases = [
+        ({"target_language": "Esperanto"}, {"target_language": "Wolof"}, "Esperanto"),  # shared key wins
+        ({}, {"target_language": "Wolof"}, "Wolof"),  # the older local-model key is only a fallback
+        ({"target_language": "ja"}, {}, "ja"),
+        ({}, {}, "zh-TW"),
+    ]
+    for translation, local, expected in cases:
+        window._load_config_into_ui(_config_with_target(window, translation, local), page=5)
+        assert window._collect_config_from_ui()["translation"]["target_language"] == expected
+
+
+def test_language_changed_in_the_extension_shows_on_the_desktop(window):
+    snapshot, revision = config_store.load_snapshot(window.config_path)
+    # Older GUI versions also saved the language under local_llama; Options only writes translation.
+    snapshot["local_llama"] = {**snapshot.get("local_llama", {}), "target_language": "zh-TW"}
+    snapshot["translation"]["target_language"] = "es-MX"
+    config_store.save_config(window.config_path, snapshot, expected_revision=revision)
+    window._sync_shared_config()
+    assert window.target_language_input.value("zh-TW") == "es-MX"
+    assert not window._dirty_pages
+
+
+def test_unsaved_target_language_keeps_the_services_page_dirty(window, monkeypatch):
+    window.switchTo(window.pages[5])
+    saved = window.target_language_input.value("zh-TW")
+    window.target_language_input.set_value("Wolof")
+    assert window._dirty_pages == {5}
+    assert window.dirty_label.text() == "Unsaved: Translation services"
+    window.target_language_input.set_value(saved)
+    assert not window._dirty_pages
+    # Saving one service writes only services, so the language stays pending.
+    window.target_language_input.set_value("Wolof")
+    window.service_catalog.model_input.setText("edited")
+    assert window._save_service()
+    assert window._dirty_pages == {5}
+    assert config_manager.load_config(window.config_path)["translation"]["target_language"] == saved
+    monkeypatch.setattr(fluent_kit, "ask", lambda *_args: QtWidgets.QMessageBox.Yes)
+    window._reset_defaults()
+    assert window.target_language_input.value("zh-TW") == saved
+    assert not window._dirty_pages
+    window.target_language_input.set_value("Wolof")
+    assert window._save_config_to_disk()
+    assert config_manager.load_config(window.config_path)["translation"]["target_language"] == "Wolof"
+    assert not window._dirty_pages
 
 
 @pytest.mark.parametrize("ok", [True, False])

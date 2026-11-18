@@ -188,16 +188,6 @@ def resolve_models_url(api_url: str, explicit_models_url: Optional[str] = None) 
     return urllib_parse.urlunsplit(parts._replace(path=path, query="", fragment=""))
 
 
-def _normalize_openai_api_url(raw_url: Optional[str]) -> tuple[str, str]:
-    """Legacy URL resolver retained for callers that expect use-as-entered URLs."""
-    stripped = (raw_url or "").strip()
-    if not stripped:
-        return DEFAULT_OPENAI_ENDPOINT, "chat_completions"
-
-    detected = _detect_api_type(urllib_parse.urlsplit(stripped).path or "")
-    return stripped, detected or API_TYPE_CHAT_COMPLETIONS
-
-
 def _coerce_text(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()

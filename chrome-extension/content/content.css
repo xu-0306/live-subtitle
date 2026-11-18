@@ -30,7 +30,7 @@
   -webkit-backdrop-filter: blur(10px);
   cursor: grab;
   width: 640px;
-  height: 160px;
+  height: auto;
   min-width: 320px;
   min-height: 90px;
   max-width: 95vw;

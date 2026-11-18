@@ -320,7 +320,7 @@ async function startCapture(tabId, streamId, wsUrl, settings) {
     session.ws.addEventListener("open", () => {
       if (!isSessionActive(session)) return;
       notifyBackground(tabId, "Connected", true, true, { phase: "connecting", snapshot: session.snapshot });
-      if (settings && (settings.translation || settings.stt)) {
+      if (settings && (settings.version === 2 || settings.snapshot || settings.translation || settings.stt)) {
         session.ws.send(JSON.stringify(buildBackendConfig(settings)));
       }
       flushPendingChunks(session);

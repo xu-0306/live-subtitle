@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument("--out", default=str(Path(__file__).parent))
     parser.add_argument("--pages", default="", help="comma-separated nav keys; default all")
     parser.add_argument("--modes", default="light,dark")
-    parser.add_argument("--size", default="1100x720")
+    parser.add_argument("--size", default="1100x880")  # tall enough for the Translation services page, which has a defaults card on top
     args = parser.parse_args()
 
     out = Path(args.out)

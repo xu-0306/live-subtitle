@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from PySide6 import QtCore, QtGui, QtWebSockets, QtWidgets
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, CheckBox, ComboBox, EditableComboBox, FluentIcon,
+    BodyLabel, CaptionLabel, CheckBox, ComboBox, FluentIcon,
     FluentWindow, InfoBadge, InfoBar, InfoLevel, LineEdit, NavigationItemPosition,
     PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton, ScrollArea, SimpleCardWidget,
     SpinBox, StrongBodyLabel, Theme, TitleLabel, TransparentToolButton,
@@ -45,10 +45,27 @@ MODEL_OPTIONS = [
 SUBTITLE_MAX_CHARS_DEFAULT = 260
 SUBTITLE_MAX_SENTENCES_DEFAULT = 2
 SUBTITLE_MAX_SENTENCES_CJK = 1
-SUBTITLE_HISTORY_LINES_DEFAULT = 2
-SUBTITLE_SHOW_PARTIAL_DEFAULT = True
 STALL_TIMEOUT_DEFAULT = 15
-STALL_CHECK_INTERVAL_DEFAULT = 5
+# Same languages and order as the extension popup; a test compares the two lists.
+LANGUAGE_OPTIONS = (
+    ("en", "English"), ("ja", "Japanese"), ("zh-TW", "Chinese (Traditional)"),
+    ("zh-CN", "Chinese (Simplified)"), ("ko", "Korean"), ("fr", "French"),
+    ("de", "German"), ("es", "Spanish"), ("pt", "Portuguese"), ("it", "Italian"),
+    ("ru", "Russian"), ("id", "Indonesian"), ("vi", "Vietnamese"), ("th", "Thai"),
+)
+
+
+def _configured_target_language(cfg: Dict[str, Any]) -> str:
+    """The shared target language as the backend resolves it; the older local-model key is the fallback."""
+    translation = cfg.get("translation") if isinstance(cfg.get("translation"), dict) else {}
+    local = cfg.get("local_llama") if isinstance(cfg.get("local_llama"), dict) else {}
+    return str(translation.get("target_language") or local.get("target_language") or "zh-TW")
+
+
+def _one_line(text: str, limit: int = 140) -> str:
+    """Status-bar text: the bar clips instead of wrapping, so cut long messages with an ellipsis."""
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
 def _fluent_palette(dark: bool) -> QtGui.QPalette:
@@ -125,7 +142,7 @@ class MainWindow(FluentWindow):
     NAV_ITEMS = (
         ("Server", "server"),
         ("Local translation", "local"),
-        ("STT models", "stt"),
+        ("Speech recognition", "stt"),
         ("Tuning", "tuning"),
         ("Translation services", "services"),
         ("Settings", "settings"),
@@ -175,6 +192,7 @@ class MainWindow(FluentWindow):
         self.force_close = False
         self.backend_failed = False
         self.last_backend_error: Optional[str] = None
+        self._log_lines: list[str] = []
         self._service_test_socket: Optional[QtWebSockets.QWebSocket] = None
         self._service_test_timer: Optional[QtCore.QTimer] = None
         self._service_test_result_received = False
@@ -264,7 +282,7 @@ class MainWindow(FluentWindow):
             self._persist_local_config,
             self,
         )
-        for key in ("model", "target", "context", "gpu_layers", "port"):
+        for key in ("model", "context", "gpu_layers", "port"):
             control = self.local_models.controls[key]
             signal = control.currentTextChanged if hasattr(control, "currentTextChanged") else control.valueChanged
             signal.connect(self._mark_dirty)
@@ -275,7 +293,7 @@ class MainWindow(FluentWindow):
         stt_page = self._build_stt_tab()
         tuning_page = self._build_tuning_tab()
         self.service_catalog = ServiceCatalogWidget()
-        self.service_catalog.changed.connect(self._service_catalog_changed)
+        self.service_catalog.changed.connect(self._services_page_changed)
         self.service_catalog.save_requested.connect(self._save_service)
         self.service_catalog.notice.connect(lambda message: self._show_notice(message, "info"))
         self.service_catalog.test_requested.connect(self._test_translation_profile)
@@ -329,10 +347,15 @@ class MainWindow(FluentWindow):
         footer.addWidget(self.save_btn)
         layout.addLayout(footer)
         self.status_bar = QtWidgets.QStatusBar()
+        self.status_bar.setFont(self.restart_notice.font())
         self.status_bar.setSizeGripEnabled(False)
         qconfig.themeChangedFinished.connect(self._update_status_palette)
         self._update_status_palette()
-        layout.addWidget(self.status_bar)
+        status_row = QtWidgets.QHBoxLayout()
+        # QStatusBar paints its message 6 px inside its left edge.
+        status_row.setContentsMargins(18, 0, 24, 0)
+        status_row.addWidget(self.status_bar)
+        layout.addLayout(status_row)
         self.status_bar.showMessage("Ready to manage the backend")
         self.save_btn.clicked.connect(self._save_defaults)
         self.reset_btn.clicked.connect(self._reset_defaults)
@@ -364,9 +387,9 @@ class MainWindow(FluentWindow):
         self.copy_ws_btn.setProperty("kind", "secondary")
         ws_layout.addWidget(self.ws_url_input, 1)
         ws_layout.addWidget(self.copy_ws_btn)
-        form.addRow("Host", self.host_input)
-        form.addRow("Port", self.port_input)
-        form.addRow("WebSocket URL", ws_container)
+        form.addRow(BodyLabel("Host"), self.host_input)
+        form.addRow(BodyLabel("Port"), self.port_input)
+        form.addRow(BodyLabel("WebSocket URL"), ws_container)
         body.addWidget(connection)
 
         controls = self._card("Server controls")
@@ -409,33 +432,12 @@ class MainWindow(FluentWindow):
         controls_layout.addLayout(error_row)
         self.error_details = PlainTextEdit()
         self.error_details.setReadOnly(True)
-        self.error_details.setMaximumHeight(110)
+        self.error_details.setMaximumHeight(180)
         self.error_details.setPlaceholderText("Backend diagnostics will appear here after a failed start.")
         self.error_details.setVisible(False)
         controls_layout.addWidget(self.error_details)
         body.addWidget(controls)
 
-        lower = QtWidgets.QHBoxLayout()
-        about = self._card("About the backend")
-        about_layout = about.layout()
-        about_label = BodyLabel(
-            "The local service exposes WebSocket speech recognition and HTTP translation. "
-            "Model downloads and profile saves are safe to manage while the server is stopped."
-        )
-        about_label.setObjectName("mutedText")
-        about_label.setWordWrap(True)
-        about_layout.addWidget(about_label)
-        tips = self._card("Quick tips")
-        tips_layout = tips.layout()
-        tips_label = BodyLabel(
-            "• Keep the port available\n• Model loading happens when a capture selects it\n• Use View logs when a dependency fails\n• Save settings before restarting"
-        )
-        tips_label.setObjectName("mutedText")
-        tips_label.setWordWrap(True)
-        tips_layout.addWidget(tips_label)
-        lower.addWidget(about, 1)
-        lower.addWidget(tips, 1)
-        body.addLayout(lower)
         body.addStretch(1)
 
         self.host_input.textChanged.connect(self._update_ws_url)
@@ -457,8 +459,8 @@ class MainWindow(FluentWindow):
         body.setContentsMargins(0, 4, 4, 20)
         body.setSpacing(14)
 
-        model_group = self._card("STT model library")
-        form = QtWidgets.QFormLayout()
+        model_group = self._card("Speech recognition models")
+        form = self.stt_model_form = QtWidgets.QFormLayout()
         model_group.layout().addLayout(form)
 
         self.model_select_combo = ComboBox()
@@ -473,21 +475,22 @@ class MainWindow(FluentWindow):
 
         self.download_progress = ProgressBar()
         self.download_progress.setValue(0)
-        self.download_progress.hide()
         self.download_label = BodyLabel("")
 
-        form.addRow("Default model", model_select_row)
-        form.addRow("Download progress", self.download_progress)
-        form.addRow("", self.download_label)
-        self.stt_language_input = EditableComboBox()
+        form.addRow(BodyLabel("Default model"), model_select_row)
+        form.addRow(BodyLabel("Download progress"), self.download_progress)
+        form.addRow(self.download_label)
+        form.setRowVisible(self.download_progress, False)
+        form.setRowVisible(self.download_label, False)
+        self.stt_language_input = fluent_kit.FreeTextComboBox()
         self.stt_language_input.addItem("Automatic", userData="auto")
         self.stt_language_input.addItem("English", userData="en")
-        self.stt_language_input.addItem("日本語", userData="ja")
-        self.stt_language_input.addItem("繁體中文", userData="zh")
-        self.stt_language_input.setToolTip("Open language values remain valid; enter a provider-supported code when needed.")
-        self.stt_partial_check = CheckBox("Show partial recognition updates")
-        form.addRow("Default language", self.stt_language_input)
-        form.addRow("Recognition", self.stt_partial_check)
+        self.stt_language_input.addItem("Japanese", userData="ja")
+        self.stt_language_input.addItem("Chinese", userData="zh")
+        self.stt_language_input.setToolTip("Choose the spoken language of the audio, or enter a provider-supported code.")
+        self.stt_partial_check = CheckBox("Translate partial recognition updates")
+        form.addRow(BodyLabel("Spoken language"), self.stt_language_input)
+        form.addRow(BodyLabel("Recognition"), self.stt_partial_check)
         body.addWidget(model_group)
 
         state_card = self._card("Availability")
@@ -516,6 +519,8 @@ class MainWindow(FluentWindow):
         body.setContentsMargins(0, 4, 4, 20)
         body.setSpacing(14)
 
+        body.addWidget(fluent_kit.muted_label(
+            "Advanced settings. The defaults work for most videos; changes apply to the next capture.", small=True))
         cleanup_group = self._card("Subtitle cleanup")
         cleanup_form = QtWidgets.QFormLayout()
         cleanup_group.layout().addLayout(cleanup_form)
@@ -528,79 +533,42 @@ class MainWindow(FluentWindow):
         self.subtitle_max_sentences_cjk_input = SpinBox()
         self.subtitle_max_sentences_cjk_input.setRange(1, 6)
         self.subtitle_max_sentences_cjk_input.setValue(SUBTITLE_MAX_SENTENCES_CJK)
-        self.subtitle_history_lines_input = SpinBox()
-        self.subtitle_history_lines_input.setRange(1, 4)
-        self.subtitle_history_lines_input.setValue(SUBTITLE_HISTORY_LINES_DEFAULT)
-        self.subtitle_show_partial_check = CheckBox("Show partial line")
-        fluent_kit.tip_row(
+        fluent_kit.hint_row(
             cleanup_form, "Max chars", self.subtitle_max_chars_input,
-            "Longest subtitle line kept on screen.\n"
-            "A longer line is cut from the start, so the\n"
-            "newest words stay.\n"
-            f"Example: at 100, a 150-character line shows\nonly its last 100.  (Default {SUBTITLE_MAX_CHARS_DEFAULT})")
-        fluent_kit.tip_row(
+            "Trim the start of lines over Max chars. "
+            f"Example: 150 chars at 100 keeps the last 100. (Default {SUBTITLE_MAX_CHARS_DEFAULT})")
+        fluent_kit.hint_row(
             cleanup_form, "Max sentences (Latin)", self.subtitle_max_sentences_default_input,
-            "For a line over Max chars, keep only its last\n"
-            "N sentences (English, Spanish, French...).\n"
-            f"Example: 2 keeps the last two.  (Default {SUBTITLE_MAX_SENTENCES_DEFAULT})")
-        fluent_kit.tip_row(
+            "Over Max chars, keep the last N Latin sentences (e.g. English). "
+            f"Example: 2 keeps two. (Default {SUBTITLE_MAX_SENTENCES_DEFAULT})")
+        fluent_kit.hint_row(
             cleanup_form, "Max sentences (CJK)", self.subtitle_max_sentences_cjk_input,
-            "Same rule for Chinese, Japanese and Korean,\n"
-            "where one sentence is already long.\n"
-            f"Example: 1 keeps only the last sentence.  (Default {SUBTITLE_MAX_SENTENCES_CJK})")
-        fluent_kit.tip_row(
-            cleanup_form, "History lines", self.subtitle_history_lines_input,
-            "How many finished lines stay on screen.\n"
-            "The line still being spoken is shown on top.\n"
-            f"Example: 2 shows the last two finished lines.  (Default {SUBTITLE_HISTORY_LINES_DEFAULT})")
-        fluent_kit.set_tip(
-            "Show a sentence while it is still being spoken.\n"
-            "It can change as more audio arrives.\n"
-            "Off: a line appears only when it is complete.",
-            self.subtitle_show_partial_check)
-        cleanup_form.addRow("", self.subtitle_show_partial_check)
+            "Same rule for Chinese, Japanese and Korean, whose sentences are long. "
+            f"Example: 1 keeps one. (Default {SUBTITLE_MAX_SENTENCES_CJK})")
         cleanup_group.setObjectName("card")
         body.addWidget(cleanup_group)
 
-        stability_group = self._card("STT stability")
+        stability_group = self._card("Speech recognition stability")
         stability_form = QtWidgets.QFormLayout()
         stability_group.layout().addLayout(stability_form)
         self.stall_timeout_input = SpinBox()
         self.stall_timeout_input.setRange(0, 300)
         self.stall_timeout_input.setValue(STALL_TIMEOUT_DEFAULT)
-        self.stall_check_interval_input = SpinBox()
-        self.stall_check_interval_input.setRange(0, 300)
-        self.stall_check_interval_input.setValue(STALL_CHECK_INTERVAL_DEFAULT)
-        fluent_kit.tip_row(
+        fluent_kit.hint_row(
             stability_form, "Stall timeout (sec)", self.stall_timeout_input,
-            "Restart speech recognition if audio keeps\n"
-            "arriving but it produces no text for this long.\n"
-            "Example: 15 restarts it after 15 s of no output.\n"
-            f"0 turns the check off.  (Default {STALL_TIMEOUT_DEFAULT})")
-        fluent_kit.tip_row(
-            stability_form, "Stall check interval (sec)", self.stall_check_interval_input,
-            "How often the stall check runs.\n"
-            "Lower reacts sooner but checks more often.\n"
-            "Example: 5 checks every 5 seconds.\n"
-            f"0 turns the check off.  (Default {STALL_CHECK_INTERVAL_DEFAULT})")
+            "Restart speech recognition if audio arrives without text; 0 disables it. "
+            f"Example: 15 = 15 seconds. (Default {STALL_TIMEOUT_DEFAULT})")
         stability_group.setObjectName("card")
         body.addWidget(stability_group)
-        tuning_note = BodyLabel("Hover a setting for a short explanation. Subtitle cleanup applies to new capture sessions. Saving does not restart an active session.")
-        tuning_note.setObjectName("mutedText")
-        tuning_note.setWordWrap(True)
-        body.addWidget(tuning_note)
         body.addStretch(1)
 
         for widget in (
             self.subtitle_max_chars_input,
             self.subtitle_max_sentences_default_input,
             self.subtitle_max_sentences_cjk_input,
-            self.subtitle_history_lines_input,
             self.stall_timeout_input,
-            self.stall_check_interval_input,
         ):
             widget.valueChanged.connect(self._mark_dirty)
-        self.subtitle_show_partial_check.toggled.connect(self._mark_dirty)
 
         return self._wrap_scroll_page(content)
 
@@ -622,6 +590,11 @@ class MainWindow(FluentWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        # A wrapped label still asks for the width of its longest unbreakable word (a model path, an
+        # error's file name), which would push every card past the window edge. Wrap in the space given.
+        for label in widget.findChildren(QtWidgets.QLabel):
+            if label.wordWrap():
+                label.setMinimumWidth(1)
         widget.layout().setContentsMargins(24, 18, 24, 24)
         scroll.setWidget(widget)
         widget.setAutoFillBackground(False)
@@ -633,6 +606,25 @@ class MainWindow(FluentWindow):
         layout = QtWidgets.QVBoxLayout(content)
         layout.setContentsMargins(0, 4, 4, 20)
         layout.setSpacing(14)
+
+        defaults = self._card("Defaults for new captures")
+        defaults_form = QtWidgets.QFormLayout()
+        defaults.layout().addLayout(defaults_form)
+        self.target_language_input = fluent_kit.FreeTextComboBox()
+        self.target_language_input.setMaxLength(128)
+        self.target_language_input.setFixedWidth(260)
+        self.target_language_input.setToolTip(
+            "Enter any language name or code. Suggestions are optional; quality depends on the model.")
+        for code, name in LANGUAGE_OPTIONS:
+            self.target_language_input.addItem(name, userData=code)
+        caption = BodyLabel("Target language")
+        caption.setFixedWidth(180)
+        defaults_form.addRow(caption, self.target_language_input)
+        defaults_form.addRow(fluent_kit.muted_label(
+            'Subtitles are translated into this language. The extension uses it when "Same as desktop" '
+            "is chosen. Applies to the next capture.", small=True))
+        self.target_language_input.currentTextChanged.connect(self._services_page_changed)
+        layout.addWidget(defaults)
         layout.addWidget(self.service_catalog)
         notice = BodyLabel(
             "Profiles are saved through the shared settings revision. The selection applies to the next capture."
@@ -680,7 +672,7 @@ class MainWindow(FluentWindow):
         settings_row_layout.addWidget(self.open_settings_folder_btn, 0, QtCore.Qt.AlignTop)
         behavior_layout.addWidget(settings_row)
         self.restart_explainer = BodyLabel(
-            "Host, port, model defaults and profile edits are written atomically. Host/port changes apply after Restart; subtitle and language defaults apply to the next capture."
+            "Save all keeps your edits on every page. Restart the backend after changing the host or port. Subtitle and language defaults apply to the next capture."
         )
         self.restart_explainer.setObjectName("mutedText")
         self.restart_explainer.setWordWrap(True)
@@ -756,7 +748,7 @@ class MainWindow(FluentWindow):
         notices = {
             "Server": "Restart to apply host and port.",
             "Local translation": "Install or remove files immediately.",
-            "STT models": "Defaults apply to the next capture.",
+            "Speech recognition": "Defaults apply to the next capture.",
             "Tuning": "Applies to the next capture.",
             "Translation services": "Applies to the next capture.",
             "Settings": "Theme previews now; Save all to keep it.",
@@ -785,10 +777,14 @@ class MainWindow(FluentWindow):
         self.dirty_label.style().unpolish(self.dirty_label)
         self.dirty_label.style().polish(self.dirty_label)
 
-    def _service_catalog_changed(self) -> None:
+    def _target_language_changed(self) -> bool:
+        return self.target_language_input.value("zh-TW") != _configured_target_language(self.config)
+
+    def _services_page_changed(self, *_args: object) -> None:
+        """Unsaved means a service draft or a target language that differs from the saved one."""
         if self._loading_ui:
             return
-        if self.service_catalog.has_unsaved_changes():
+        if self.service_catalog.has_unsaved_changes() or self._target_language_changed():
             self._dirty_pages.add(5)
         else:
             self._dirty_pages.discard(5)
@@ -836,8 +832,8 @@ class MainWindow(FluentWindow):
         self.status_bar.showMessage("Shared settings updated from the backend or extension", 4500)
 
     def _show_notice(self, message: str, kind: str = "info") -> None:
-        self.status_bar.showMessage(message, 6000)
-        factory = {"error": InfoBar.error, "warning": InfoBar.warning}.get(kind, InfoBar.info)
+        self.status_bar.showMessage(_one_line(message), 6000)
+        factory ={"error": InfoBar.error, "warning": InfoBar.warning}.get(kind, InfoBar.info)
         bar = factory("", message, parent=self, duration=6000)
         bar.setMaximumWidth(max(300, self.width() - 48))
         bar.contentLabel.setWordWrap(True)
@@ -885,7 +881,7 @@ class MainWindow(FluentWindow):
             )
             self._navigate(stt_nav)
             self._show_notice(
-                "Recommendation saved. Download the speech model here, then review the local translation download.",
+                "Recommendation saved. Download the speech recognition model here, then review the local translation download.",
                 "info",
             )
         elif first_run:
@@ -1155,9 +1151,11 @@ class MainWindow(FluentWindow):
         if hasattr(self, "model_download_btn"):
             self.model_download_btn.setEnabled(not downloading)
 
-    def _set_status(self, text: str, status_type: str = "idle") -> None:
+    def _set_status(self, text: str, status_type: str = "idle", detail: Optional[str] = None) -> None:
+        """Badge and status bar take the short ``text``; ``detail`` is the longer reason shown wrapped."""
         if self.backend_failed and status_type != "error":
             return
+        headline = detail or text
         normalized = str(text).strip().lower()
         if status_type == "idle" and normalized in {"starting", "ready", "running"}:
             status_type = "running"
@@ -1168,15 +1166,15 @@ class MainWindow(FluentWindow):
         self.server_status.setLevel({"running": InfoLevel.SUCCESS, "error": InfoLevel.ERROR}.get(
             status_type, InfoLevel.INFOAMTION))
         if hasattr(self, "server_status_detail"):
-            if text in {"Starting", "Ready", "Stopping", "Stopped"}:
-                detail = {
-                    "Starting": "Starting the local service…",
-                    "Ready": "The local service is ready for connections.",
-                    "Stopping": "Stopping the local service…",
-                    "Stopped": "The service is stopped. Downloads and settings remain available.",
-                }.get(text, text)
+            detail = detail or {
+                "Starting": "Starting the local service…",
+                "Ready": "The local service is ready for connections.",
+                "Stopping": "Stopping the local service…",
+                "Stopped": "The service is stopped. Downloads and settings remain available.",
+            }.get(text)
+            if detail:
                 self.server_status_detail.setText(detail)
-        self.status_bar.showMessage(text)
+        self.status_bar.showMessage(_one_line(headline))
         if self.tray:
             self.tray.setToolTip(text)
 
@@ -1211,7 +1209,8 @@ class MainWindow(FluentWindow):
         self.download_worker = ModelDownloadWorker(url, target_path)
         self.download_worker.progress.connect(self._on_download_progress)
         self.download_worker.finished.connect(self._on_download_finished)
-        self.download_progress.show()
+        self.stt_model_form.setRowVisible(self.download_progress, True)
+        self.stt_model_form.setRowVisible(self.download_label, True)
         self.download_progress.setValue(0)
         self.download_label.setText(f"Downloading {model_name}...")
         self.download_worker.start()
@@ -1231,11 +1230,13 @@ class MainWindow(FluentWindow):
             self.download_worker.deleteLater()
         self.download_worker = None
         self.download_progress.setRange(0, 100)
+        self.stt_model_form.setRowVisible(self.download_progress, False)
+        self.stt_model_form.setRowVisible(self.download_label, False)
         if ok:
-            self.download_progress.setValue(100)
-            self.download_label.setText("Download complete")
+            self._refresh_model_list()
+            self._show_notice("Download complete")
         else:
-            self.download_label.setText(message or "Download failed")
+            self._show_notice(message or "Download failed", "error")
             self._set_status("Download failed", "error")
         self._update_buttons()
 
@@ -1249,9 +1250,13 @@ class MainWindow(FluentWindow):
         self._set_status(text, status_type)
 
     def _on_runner_log(self, line: str) -> None:
-        self._log_lines = (getattr(self, "_log_lines", []) + [str(line)])[-200:]
-        if hasattr(self, "error_details"):
-            self.error_details.setPlainText("\n".join(self._log_lines[-20:]))
+        self._log_lines = (self._log_lines + [str(line)])[-200:]
+        self._refresh_diagnostics()
+
+    def _refresh_diagnostics(self) -> None:
+        """Failure reason first, then the log tail. The box wraps and scrolls, so nothing is clipped."""
+        parts = [self.last_backend_error or "", "\n".join(self._log_lines[-20:])]
+        self.error_details.setPlainText("\n\n".join(part for part in parts if part))
 
     def _start_backend(self) -> None:
         self.backend_failed = False
@@ -1265,7 +1270,7 @@ class MainWindow(FluentWindow):
                 return
             if not self._validate_server_settings():
                 return
-            if not self._resolve_unsaved_changes():
+            if not self.restart_pending and not self._resolve_unsaved_changes():
                 return
             host = self.host_input.text().strip()
             port = self.port_input.value()
@@ -1292,6 +1297,8 @@ class MainWindow(FluentWindow):
 
     def _restart_backend(self) -> None:
         if self.backend_runner and self.backend_runner.isRunning():
+            if not self._resolve_unsaved_changes():
+                return
             self.restart_pending = True
             self._stop_backend()
             return
@@ -1302,8 +1309,8 @@ class MainWindow(FluentWindow):
             self.backend_runner.deleteLater()
         self.backend_runner = None
         if self.restart_pending:
-            self.restart_pending = False
             self._start_backend()
+            self.restart_pending = False
             return
         if not self.backend_failed:
             self._set_status("Stopped", "idle")
@@ -1312,10 +1319,9 @@ class MainWindow(FluentWindow):
     def _on_backend_error(self, message: str) -> None:
         self.backend_failed = True
         self.last_backend_error = message
-        if hasattr(self, "error_details"):
-            self.error_details.setPlainText("\n".join(getattr(self, "_log_lines", []) + [message]))
-            self.error_details.setVisible(self.error_toggle.isChecked())
-        self._set_status(message, "error")
+        self._refresh_diagnostics()
+        self.error_toggle.setChecked(True)  # open the box: the reason belongs where the failure shows
+        self._set_status("Failed", "error", detail=message)
 
     def _browse_model_dir(self) -> None:
         start_dir = self.model_cache_input.text().strip()
@@ -1509,7 +1515,8 @@ class MainWindow(FluentWindow):
         self.config = updated
         self.service_catalog.mark_saved()
         if services_only:
-            self._dirty_pages.discard(5)
+            # Saving one service leaves a pending target language unsaved.
+            self._services_page_changed()
         else:
             self._dirty_pages.clear()
         self._update_dirty_indicator()
@@ -1553,11 +1560,10 @@ class MainWindow(FluentWindow):
     # Only fields edited on a page participate in its save or reset.
     PAGE_FIELDS = {
         0: {"server": ("host", "port")},
-        1: {"local_llama": ("context", "gpu_layers", "port", "model_id", "target_language"),
-            "translation": ("target_language",)},
-        2: {"stt": ("model", "language", "model_path"), "translation": ("partial",)},
-        3: {"subtitle": ("max_chars", "max_sentences_default", "max_sentences_cjk", "history_lines", "show_partial"),
-            "stt": ("stall_timeout_sec", "stall_check_interval_sec")},
+        1: {"local_llama": ("context", "gpu_layers", "port", "model_id")},
+        2: {"stt": ("model", "language"), "translation": ("partial",)},
+        3: {"subtitle": ("max_chars", "max_sentences_default", "max_sentences_cjk"),
+            "stt": ("stall_timeout_sec",)},
         4: {"models": ("root",), "stt": ("model_cache_dir",), "local_llama": ("root",), "gui": ("theme",)},
     }
 
@@ -1569,7 +1575,7 @@ class MainWindow(FluentWindow):
     def _reset_defaults(self) -> None:
         page = self._current_page
         name = self.page_names[page]
-        message = (f"Discard the {name} draft and restore saved services? Saved services will be kept."
+        message = (f"Discard unsaved changes on {name}? Saved services and the saved target language are kept."
                    if page == 5 else f"Reset {name} fields to defaults? Review them, then Save all to keep them.")
         answer = fluent_kit.ask(
             self, f"Reset {name}", message,
@@ -1579,6 +1585,9 @@ class MainWindow(FluentWindow):
         if answer != QtWidgets.QMessageBox.Yes:
             return
         if page == 5:
+            self._loading_ui = True
+            self.target_language_input.set_value(_configured_target_language(self.config))
+            self._loading_ui = False
             self.service_catalog.discard_selected()
         else:
             defaults = config_manager.load_default_config()
@@ -1609,14 +1618,11 @@ class MainWindow(FluentWindow):
         model_dir = storage_root / config_manager.SPEECH_MODELS_DIR_NAME
         cfg["models"]["root"] = str(storage_root)
         cfg["stt"]["model_cache_dir"] = str(model_dir)
-        cfg["stt"].pop("model_path", None)
         cfg["stt"]["model"] = self.model_select_combo.currentData() or "medium"
-        language_index = self.stt_language_input.currentIndex()
-        cfg["stt"]["language"] = (
-            self.stt_language_input.itemData(language_index)
-            if language_index >= 0 and self.stt_language_input.currentText() == self.stt_language_input.itemText(language_index)
-            else self.stt_language_input.currentText().strip() or "auto"
-        )
+        if (cfg["stt"]["model"] != self.config.get("stt", {}).get("model", "medium")
+                or storage_root != self._model_storage_root_from_config(self.config)):
+            cfg["stt"].pop("model_path", None)
+        cfg["stt"]["language"] = self.stt_language_input.value("auto")
 
         cfg["subtitle"]["max_chars"] = int(self.subtitle_max_chars_input.value())
         cfg["subtitle"]["max_sentences_default"] = int(
@@ -1625,16 +1631,10 @@ class MainWindow(FluentWindow):
         cfg["subtitle"]["max_sentences_cjk"] = int(
             self.subtitle_max_sentences_cjk_input.value()
         )
-        cfg["subtitle"]["history_lines"] = int(self.subtitle_history_lines_input.value())
-        cfg["subtitle"]["show_partial"] = bool(
-            self.subtitle_show_partial_check.isChecked()
-        )
         cfg["stt"]["stall_timeout_sec"] = int(self.stall_timeout_input.value())
-        cfg["stt"]["stall_check_interval_sec"] = int(
-            self.stall_check_interval_input.value()
-        )
         translation = cfg.setdefault("translation", {})
         translation["partial"] = bool(self.stt_partial_check.isChecked())
+        translation["target_language"] = self.target_language_input.value("zh-TW")
         cfg["gui"] = dict(cfg.get("gui") or {})
         cfg["gui"]["theme"] = self._theme_mode()
         cfg = self.service_catalog.collect_into_config(cfg)
@@ -1653,7 +1653,7 @@ class MainWindow(FluentWindow):
             self.config = copy.deepcopy(cfg)
         self.config.setdefault("gui", {})
         self.settings_location.setText(
-            f"Settings file\n{self.config_path}\nWrites use an atomic revision check when the shared backend store is available."
+            f"Settings file\n{self.config_path}\nSave all saves your changes here."
         )
         if page is None or page == 4:
             theme = str(cfg.get("gui", {}).get("theme") or "system")
@@ -1668,13 +1668,7 @@ class MainWindow(FluentWindow):
 
         if page is None or page in {2, 4}:
             stt_cfg = cfg.get("stt", {})
-            model_path = stt_cfg.get("model_path")
             selected_model = stt_cfg.get("model", "medium")
-            if model_path:
-                try:
-                    selected_model = Path(model_path).stem
-                except OSError:
-                    pass
             if page == 4:
                 selected_model = self.model_select_combo.currentData()
         if page is None or page == 4:
@@ -1686,20 +1680,9 @@ class MainWindow(FluentWindow):
             self._update_model_storage_paths()
         if page is None or page in {2, 4}:
             self._refresh_model_list(selected_model)
-            model_index = next(
-                (i for i in range(self.model_select_combo.count()) if self.model_select_combo.itemData(i) == selected_model),
-                None,
-            )
-            if model_index is not None:
-                self.model_select_combo.setCurrentIndex(model_index)
 
         if page is None or page == 2:
-            language = stt_cfg.get("language", "auto")
-            lang_index = self.stt_language_input.findData(language)
-            if lang_index >= 0:
-                self.stt_language_input.setCurrentIndex(lang_index)
-            else:
-                self.stt_language_input.setCurrentText(str(language))
+            self.stt_language_input.set_value(str(stt_cfg.get("language", "auto")))
             translation_cfg = cfg.get("translation", {})
             if not isinstance(translation_cfg, dict):
                 translation_cfg = {}
@@ -1739,34 +1722,14 @@ class MainWindow(FluentWindow):
                     SUBTITLE_MAX_SENTENCES_CJK
                 )
             try:
-                self.subtitle_history_lines_input.setValue(
-                    int(subtitle_cfg.get("history_lines", SUBTITLE_HISTORY_LINES_DEFAULT))
-                )
-            except (TypeError, ValueError):
-                self.subtitle_history_lines_input.setValue(SUBTITLE_HISTORY_LINES_DEFAULT)
-            self.subtitle_show_partial_check.setChecked(
-                bool(subtitle_cfg.get("show_partial", SUBTITLE_SHOW_PARTIAL_DEFAULT))
-            )
-
-            try:
                 self.stall_timeout_input.setValue(
                     int(stt_cfg.get("stall_timeout_sec", STALL_TIMEOUT_DEFAULT))
                 )
             except (TypeError, ValueError):
                 self.stall_timeout_input.setValue(STALL_TIMEOUT_DEFAULT)
-            try:
-                self.stall_check_interval_input.setValue(
-                    int(
-                        stt_cfg.get(
-                            "stall_check_interval_sec", STALL_CHECK_INTERVAL_DEFAULT
-                        )
-                    )
-                )
-            except (TypeError, ValueError):
-                self.stall_check_interval_input.setValue(STALL_CHECK_INTERVAL_DEFAULT)
-
         if page is None or page == 5:
             self.service_catalog.load_from_config(cfg)
+            self.target_language_input.set_value(_configured_target_language(cfg))
         if page is None or page == 1:
             self.local_models.load_config(cfg)
         self._update_ws_url()

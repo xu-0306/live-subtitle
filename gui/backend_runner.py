@@ -30,12 +30,14 @@ _SECRET_RE = re.compile(
     r"(\s*[=:]\s*|\s+)([^\s,;]+)"
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
+_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@")
 
 
 def sanitize_log_line(line: str) -> str:
     """Remove common credentials before exposing child output to the GUI."""
 
-    cleaned = _BEARER_RE.sub("Bearer <redacted>", str(line).rstrip())
+    cleaned = _URL_USERINFO_RE.sub(r"\1<redacted>@", str(line).rstrip())
+    cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
     return _SECRET_RE.sub(lambda match: f"{match.group(1)}=<redacted>", cleaned)
 
 
@@ -170,13 +172,6 @@ class BackendRunner(QtCore.QThread):
             except subprocess.TimeoutExpired:
                 pass
 
-    def _failure_message(self, prefix: str, exit_code: Optional[int] = None) -> str:
-        suffix = f" (exit code {exit_code})" if exit_code is not None else ""
-        recent = self.recent_logs[-8:]
-        if recent:
-            return f"{prefix}{suffix}: " + " | ".join(recent)
-        return f"{prefix}{suffix}"
-
     def run(self) -> None:
         process: Optional[subprocess.Popen] = None
         ready_emitted = False
@@ -243,9 +238,7 @@ class BackendRunner(QtCore.QThread):
                 exit_code = process.poll()
                 if exit_code is not None:
                     if not ready_emitted:
-                        self.error.emit(
-                            self._failure_message("Backend exited before ready", exit_code)
-                        )
+                        self.error.emit(f"Backend exited before ready (exit code {exit_code})")
                     break
                 payload = self._health_probe(health_url, self._instance_id)
                 # A stop request or child exit can happen while the HTTP
@@ -261,11 +254,7 @@ class BackendRunner(QtCore.QThread):
                     self.started.emit()
                     break
                 if time.monotonic() >= deadline:
-                    self.error.emit(
-                        self._failure_message(
-                            f"Backend readiness timed out after {self.ready_timeout:.1f}s"
-                        )
-                    )
+                    self.error.emit(f"Backend readiness timed out after {self.ready_timeout:.1f}s")
                     break
                 self._stop_event.wait(self.health_interval)
 
@@ -276,15 +265,13 @@ class BackendRunner(QtCore.QThread):
                     exit_code = process.poll()
                     if exit_code is not None:
                         if exit_code != 0:
-                            self.error.emit(
-                                self._failure_message("Backend stopped unexpectedly", exit_code)
-                            )
+                            self.error.emit(f"Backend stopped unexpectedly (exit code {exit_code})")
                         break
                     self._stop_event.wait(0.1)
                 if self._stop_event.is_set():
                     self._terminate_process(wait=True)
         except Exception as exc:
-            self.error.emit(self._failure_message(f"{type(exc).__name__}: {exc}"))
+            self.error.emit(f"{type(exc).__name__}: {exc}")
             if process is not None:
                 self._terminate_process(wait=True)
         finally:

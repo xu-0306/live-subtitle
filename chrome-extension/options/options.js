@@ -60,10 +60,7 @@
         socket.addEventListener("message", (event) => {
           let payload;
           try { payload = JSON.parse(event.data); } catch { return; }
-          if (payload?.type === "desktop_management_progress") {
-            const percent = payload.total > 0 ? ` · ${Math.min(100, Math.round(payload.done * 100 / payload.total))}%` : "";
-            status(`${payload.message || "Downloading"}${percent}`, "syncing");
-          } else if (payload?.type === "desktop_management_result") {
+          if (payload?.type === "desktop_management_result") {
             if (payload.ok) finish(null, payload);
             else finish(new Error(String(payload.error || "The backend rejected this change.")));
           } else if (payload?.type === "error") {
@@ -75,9 +72,16 @@
       } catch (error) { finish(error); }
     });
   }
+  // Every button works on the backend's settings except Refresh, so with no snapshot (offline) they stay off.
+  function syncButtons() {
+    const offline = !state.snapshot;
+    document.querySelectorAll("button").forEach((button) => {
+      button.disabled = state.busy || (offline && button.id !== "refreshSettings");
+    });
+  }
   function setBusy(value) {
     state.busy = value;
-    document.querySelectorAll("button").forEach((button) => { button.disabled = value; });
+    syncButtons();
   }
   async function perform(action, data, message, timeoutMs) {
     if (state.busy || !state.snapshot) return;
@@ -86,7 +90,6 @@
     try {
       const result = await request(action, data, timeoutMs);
       state.snapshot = result;
-      state.defaultsDirty = false;
       render();
       const savedProfile = action === "save_profile"
         ? result.profiles?.find((item) => item.id === result.saved_profile_id) : null;
@@ -112,22 +115,28 @@
         || !state.snapshot;
       state.snapshot = result;
       if (changed) render();
+      syncButtons();
       $("connectionBadge").textContent = "Connected";
       $("connectionBadge").dataset.state = "active";
       $("revisionLabel").textContent = `Shared settings revision ${result.revision} · backend ${result.instance_id.slice(0, 8)}`;
-      if (!quiet) status("Connected. Models and services are in sync with the desktop app.", "active");
+      if (!quiet) status("Connected. Settings are in sync with the desktop app.", "active");
       await checkMigration();
     } catch (error) {
       $("connectionBadge").textContent = "Offline";
       $("connectionBadge").dataset.state = "error";
       if (!quiet || !state.snapshot) status(error.message, "error");
+      if (!state.snapshot) {
+        $("revisionLabel").textContent = "Offline · actions are disabled until the backend is reachable. Start it in the desktop app, then press Refresh.";
+      }
+      syncButtons();
     }
   }
-  function button(label, handler, danger = false) {
+  function button(label, handler, danger = false, serviceName = "") {
     const element = document.createElement("button");
     element.type = "button";
     element.className = danger ? "secondary-button danger" : "secondary-button";
     element.textContent = label;
+    if (serviceName) element.setAttribute("aria-label", `${label} ${serviceName}`);
     element.addEventListener("click", handler);
     return element;
   }
@@ -151,51 +160,6 @@
     element.append(info, actionBox);
     return element;
   }
-  function renderSpeech() {
-    const list = $("speechList");
-    list.replaceChildren();
-    const items = state.snapshot.stt_models || [];
-    $("speechCount").textContent = `${items.filter((item) => item.available).length} installed`;
-    const current = state.snapshot.defaults?.stt?.model;
-    for (const item of items) {
-      const actions = [];
-      if (item.available) {
-        if (item.id !== current) actions.push(button("Use as default", () => perform("set_defaults", { stt_model: item.id }, "Saving speech default…")));
-        if (item.id !== current && ["tiny", "base", "small", "medium", "large-v3"].includes(item.id)) {
-          actions.push(button("Remove download", () => {
-            if (global.confirm(`Remove the downloaded ${item.name} file? It can be downloaded again.`)) perform("remove_stt", { id: item.id }, "Removing speech download…");
-          }, true));
-        }
-      } else if (["tiny", "base", "small", "medium", "large-v3"].includes(item.id)) {
-        actions.push(button("Download", () => perform("install_stt", { id: item.id }, `Downloading ${item.name}…`, 60 * 60 * 1000)));
-      }
-      const label = `${item.id}${item.id === current ? " · desktop default" : ""}${item.reason ? " · " + item.reason : ""}`;
-      list.append(row(item.name, label, item.available ? "installed" : item.status || "missing", actions));
-    }
-  }
-  function renderLocal() {
-    const list = $("localList");
-    list.replaceChildren();
-    const items = state.snapshot.local_models || [];
-    $("localCount").textContent = `${items.filter((item) => item.published).length} in choices`;
-    for (const item of items) {
-      const actions = [];
-      if (!item.installed) {
-        actions.push(button("Download", () => perform("install_local", { id: item.id }, `Downloading ${item.name}…`, 60 * 60 * 1000)));
-      } else {
-        actions.push(button(item.published ? "Remove choice" : "Add to choices", () => perform("publish_local", { id: item.id, published: !item.published }, "Updating model choices…")));
-      }
-      if (item.custom) {
-        actions.push(button("Edit", () => editLocal(item)));
-        actions.push(button("Remove entry", () => {
-          if (global.confirm(`Remove ${item.name} from the catalog? Downloaded files are kept.`)) perform("delete_local", { id: item.id }, "Removing model entry…");
-        }, true));
-      }
-      const size = (item.size / (1024 ** 3)).toFixed(2);
-      const detail = `${item.repo} · ${size} GiB · ${item.license}${item.reason ? " · " + item.reason : ""}`;
-      list.append(row(item.name, detail, item.published ? "published" : item.status || "missing", actions));
-    }
-  }
   function selectionValue(selection) {
     return selection?.kind && selection?.id ? `${selection.kind}:${selection.id}` : "none:none";
   }
@@ -211,12 +175,8 @@
     stt.value = defaults.stt?.model || "";
     const translation = $("defaultTranslation");
     translation.replaceChildren(new Option("None · subtitles only", "none:none"));
-    for (const item of state.snapshot.local_models || []) {
-      if (item.published) translation.add(new Option(`Local · ${item.name}`, `local:${item.id}`));
-    }
-    for (const item of state.snapshot.profiles || []) {
-      if (!item.available) continue;
-      translation.add(new Option(`Service · ${item.name}`, `profile:${item.id}`));
+    for (const item of state.snapshot.models || []) {
+      if (item.available) translation.add(new Option(`${item.selection.kind === "local" ? "Local" : "Service"} · ${item.name}`, item.id));
     }
     translation.value = selectionValue(defaults.translation?.selection);
     $("defaultLanguage").value = defaults.translation?.target_language || "zh-TW";
@@ -228,11 +188,11 @@
     const items = state.snapshot.profiles || [];
     $("serviceCount").textContent = `${items.length} configured`;
     for (const item of items) {
-      const actions = [button("Edit", () => editService(item))];
-      if (item.available) actions.push(button("Use as default", () => perform("set_defaults", { translation_selection: { kind: "profile", id: item.id } }, "Saving translation default…")));
+      const actions = [button("Edit", () => editService(item), false, item.name)];
+      if (item.available) actions.push(button("Use as default", () => perform("set_defaults", { translation_selection: { kind: "profile", id: item.id } }, "Saving translation default…"), false, item.name));
       actions.push(button("Remove", () => {
           if (global.confirm(`Remove ${item.name} from shared settings?`)) perform("delete_profile", { id: item.id }, "Removing service…");
-        }, true));
+        }, true, item.name));
       const format = ["openai", "openai_compatible"].includes(item.engine)
         ? ` · ${apiLabels[item.api_type] || item.api_type || "Untested"}` : "";
       const detail = `${item.engine} · ${item.model}${format}${item.base_url ? " · " + item.base_url : ""}${item.has_api_key ? " · key saved" : ""}`;
@@ -240,17 +200,8 @@
     }
   }
   function render() {
-    renderSpeech();
-    renderLocal();
     renderServices();
     renderDefaults();
-  }
-  function editLocal(item) {
-    $("editLocalId").value = item.id;
-    $("editLocalName").value = item.name;
-    $("editLocalNotes").value = item.notes || "";
-    $("editLocalForm").hidden = false;
-    $("editLocalForm").scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
   function resetService() {
     $("serviceForm").reset();
@@ -373,26 +324,21 @@
     for (const id of ["defaultStt", "defaultTranslation", "defaultLanguage", "defaultPartial"]) {
       $(id).addEventListener(id === "defaultLanguage" ? "input" : "change", () => { state.defaultsDirty = true; });
     }
-    $("saveDefaults").addEventListener("click", () => {
+    $("saveDefaults").addEventListener("click", async () => {
       const value = $("defaultTranslation").value;
       const colon = value.indexOf(":");
-      perform("set_defaults", {
+      const saved = await perform("set_defaults", {
         stt_model: $("defaultStt").value,
         translation_selection: { kind: value.slice(0, colon), id: value.slice(colon + 1) },
         target_language: $("defaultLanguage").value.trim(),
         partial: $("defaultPartial").checked,
       }, "Saving desktop defaults…");
+      if (saved) {
+        // Only this form's own save clears the edit flag; other actions must not overwrite unsaved edits.
+        state.defaultsDirty = false;
+        renderDefaults();
+      }
     });
-    $("addLocalForm").addEventListener("submit", (event) => {
-      event.preventDefault();
-      perform("add_local", { repo: $("localRepo").value.trim(), filename: $("localFilename").value.trim() }, "Reading pinned GGUF metadata…", 45000);
-    });
-    $("editLocalForm").addEventListener("submit", (event) => {
-      event.preventDefault();
-      perform("rename_local", { id: $("editLocalId").value, name: $("editLocalName").value.trim(), notes: $("editLocalNotes").value.trim() }, "Saving model details…");
-      $("editLocalForm").hidden = true;
-    });
-    $("cancelLocalEdit").addEventListener("click", () => { $("editLocalForm").hidden = true; });
     $("serviceForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const profile = {
@@ -426,8 +372,32 @@
       await storageSet({ extensionTheme: theme });
     });
   }
+  function wireNavigation() {
+    const links = [...document.querySelectorAll(".settings-nav a")];
+    const sections = links.map((link) => document.querySelector(link.getAttribute("href")));
+    const mark = (index) => links.forEach((link, i) => {
+      if (i === index) link.setAttribute("aria-current", "location");
+      else link.removeAttribute("aria-current");
+    });
+    const update = () => {
+      const visible = sections.map((section, index) => ({ section, index }))
+        .filter(({ section }) => section && section.getClientRects().length);
+      const atBottom = document.documentElement.scrollHeight > global.innerHeight && global.scrollY + global.innerHeight >= document.documentElement.scrollHeight - 2;
+      const index = (atBottom ? visible.at(-1)?.index : visible.filter(({ section }) => section.getBoundingClientRect().top <= 80).at(-1)?.index)
+        ?? visible[0]?.index;
+      if (index !== undefined) mark(index);
+    };
+    links.forEach((link, index) => link.addEventListener("click", () => {
+      mark(index);
+      global.requestAnimationFrame(() => mark(index));
+    }));
+    global.addEventListener("scroll", update, { passive: true });
+    global.addEventListener("resize", update);
+    update();
+  }
   async function init() {
     wire();
+    wireNavigation();
     const saved = await storageGet(["wsUrl", "extensionTheme"]);
     state.wsUrl = saved.wsUrl || state.wsUrl;
     $("wsUrl").value = state.wsUrl;

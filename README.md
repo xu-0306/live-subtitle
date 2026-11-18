@@ -40,12 +40,12 @@ Live Subtitle captures the audio of a Chrome or Edge tab, turns the speech into 
 Requirements: 64-bit Windows and a Chromium-based browser (Chrome, Edge). An NVIDIA GPU is recommended but not required.
 
 1. **Download** both files from the [latest release](https://github.com/xu-0306/live-subtitle/releases/latest): `Live-Subtitle-windows-x64.zip` and `Live-Subtitle-chrome-extension-v<version>.zip`.
-2. **Start the desktop app.** Unzip the Windows package and run `live-subtitle.exe`. On first launch it reads the GPU's memory and recommends a speech model and translation setup.
+2. **Start the desktop app.** Unzip the Windows package and run `live-subtitle.exe`. On first launch it reads the GPU's memory and recommends a speech recognition model and translation setup.
 3. **Start the server.** On the **Server** page, click **Start backend** and wait until it reports that it is running.
 4. **Add the extension.** Unzip the extension package, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose the unzipped folder.
 5. **Start capturing.** In a tab that is playing speech, click the Live Subtitle icon in the toolbar, choose a translation option and target language, and click **Start capture**. The subtitle box can be dragged and resized.
 
-Each speech model is downloaded the first time it is used, so the first capture takes longer to start.
+Each speech recognition model is downloaded the first time it is used, so the first capture takes longer to start.
 
 <details>
 <summary>Run from source instead</summary>
@@ -87,14 +87,14 @@ Install PyTorch for your environment, then start the desktop app:
     <td width="50%">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/gui-local-dark.png">
-        <img src="docs/media/gui-local-light.png" alt="Local translation page: choose an on-device translation model and default target language, then download it">
+        <img src="docs/media/gui-local-light.png" alt="Local translation page: choose an on-device translation model, then download it">
       </picture>
       <p align="center"><em>Local translation models</em></p>
     </td>
     <td width="50%">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/gui-services-dark.png">
-        <img src="docs/media/gui-services-light.png" alt="Translation services page: a list of saved connections such as Ollama and an OpenAI-compatible API, with connection details and a Test connection button">
+        <img src="docs/media/gui-services-light.png" alt="Translation services page: the default target language at the top, then a list of saved connections such as Ollama and an OpenAI-compatible API, with connection details and a Test connection button">
       </picture>
       <p align="center"><em>Translation service connections</em></p>
     </td>
@@ -105,7 +105,7 @@ Install PyTorch for your environment, then start the desktop app:
 | --- | --- |
 | **Server** | Start, stop and restart the local server, and read its logs. |
 | **Local translation** | Download and manage translation models that run on this computer. |
-| **STT models** | Choose the Whisper speech-recognition model. |
+| **Speech recognition** | Choose the Whisper speech-recognition model. |
 | **Tuning** | Adjust subtitle and streaming behaviour. |
 | **Translation services** | Save and test connections to Ollama, OpenAI-compatible APIs, vLLM and similar services. |
 | **Settings** | Theme, where settings and models are stored, and the model recommendation. |
@@ -148,11 +148,11 @@ Tab audio is sent only to the local server. If a translation service is selected
 
 ### Models and application data
 
-Models are not included in the release packages. Speech models download the first time they are needed; local translation models are downloaded from the **Local translation** page.
+Models are not included in the release packages. Speech recognition models download the first time they are needed; local translation models are downloaded from the **Local translation** page.
 
 On first launch, a setup assistant reads total and free NVIDIA video memory through `nvidia-smi`, budgets Whisper and local translation together, and recommends a low-latency, everyday or quality pair. Below 8 GiB, or without a supported NVIDIA GPU, it recommends a smaller Whisper model with CPU translation and explains the external-service option. Run it again under **Settings → Recommend model setup**.
 
-Applying a recommendation saves the choices but does not start large downloads. Start them from **STT models** and **Local translation**. A recommended local translation model becomes the default only after its download and hash check finish.
+Applying a recommendation saves the choices but does not start large downloads. Start them from **Speech recognition** and **Local translation**. A recommended local translation model becomes the default only after its download and hash check finish.
 
 Default data layout on Windows:
 
@@ -169,7 +169,7 @@ Settings from the older `%APPDATA%\STT-TTS\config.yaml` can be copied to the new
 
 ### Using the extension without the desktop app
 
-If you start the backend directly instead of through the desktop app, the extension's **Options** page covers the common settings: download or remove Whisper models, download or publish local GGUF models, add and edit public Hugging Face GGUF entries, manage translation-service connections, and save the shared speech, translation and target-language defaults. Options only manages a backend on this computer. Keys can be sent to the backend for storage, but the backend never sends them back. The desktop app picks up these changes when it has no unsaved edits of its own.
+If you start the backend directly instead of through the desktop app, the extension's **Options** page covers the common settings: manage translation-service connections, and save the shared speech, translation and target-language defaults. Models are installed and removed in the desktop app. Options only manages a backend on this computer. Keys can be sent to the backend for storage, but the backend never sends them back. The desktop app picks up these changes when it has no unsaved edits of its own.
 
 ### Which setting wins
 
@@ -198,7 +198,7 @@ The extension can choose speech and translation options but cannot change where 
 
 ## Feedback
 
-Please [open an issue](https://github.com/xu-0306/live-subtitle/issues) with your Windows version, speech model, translation choice, CPU/GPU, and any error messages or logs.
+Please [open an issue](https://github.com/xu-0306/live-subtitle/issues) with your Windows version, speech recognition model, translation choice, CPU/GPU, and any error messages or logs.
 
 ## Credits and license
 

@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtCore, QtWidgets
-from qfluentwidgets import ComboBox, EditableComboBox, SimpleCardWidget
+from qfluentwidgets import ComboBox, SimpleCardWidget
 
 from gui._local_model_form import build_form
 
@@ -33,7 +33,6 @@ def test_build_form_exposes_contract_controls_and_initial_values() -> None:
         "add_model",
         "details",
         "hardware",
-        "target",
         "install",
         "cancel",
         "stop",
@@ -69,23 +68,8 @@ def test_build_form_exposes_contract_controls_and_initial_values() -> None:
     assert status.wordWrap() is True
     assert "automatically" in status.text()
 
-    target = controls["target"]
-    # Free-text language field is a Fluent EditableComboBox subclass, not a QComboBox.
-    assert isinstance(target, EditableComboBox)
-    assert target.isEditable()
-    assert [target.itemText(index) for index in range(target.count())] == [
-        "Traditional Chinese",
-        "English",
-        "Japanese",
-    ]
-    assert [target.itemData(index) for index in range(target.count())] == [
-        "zh-TW",
-        "en",
-        "ja",
-    ]
-
-    target.setEditText('Te Reo Māori')
-    assert target.currentText() == 'Te Reo Māori'
+    # The target language is a shared translation default, so it is not part of this form.
+    assert "target" not in controls
     assert controls["install"].isEnabled() is True
     assert controls["cancel"].isEnabled() is False
     assert controls["stop"].isEnabled() is False

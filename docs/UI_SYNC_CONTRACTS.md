@@ -45,7 +45,7 @@ capabilities: ["profile_import", "management_v1"]
 - 原子替換的設定文件內嵌 `_stt_tts_store` revision／digest；缺少舊 `.revision` sidecar 不會失去衝突保護。既有無版本文件或外部編輯以 52-bit digest 產生版本 token，保存時限制在 JavaScript safe integer 範圍。revision 用於相等性比較，不能假設外部編輯後仍單調遞增。
 - profile 的 engine、model、API 類型、URL 補全與引擎專有 options 必須保存原意；Ollama、NLLB 與相容 API 不因搬移儲存位置而換成不同引擎。
 - GUI 保存與瀏覽器遷移採同一個原子保存及衝突處理機制。
-- Options 的 `desktop_management` v1 透過同一個本機 `/asr` WebSocket 讀取無密鑰快照，或帶 `expected_revision` 執行單項變更。後端回覆 `desktop_management_result`，長時間下載期間回覆 `desktop_management_progress`。可管理共用預設、Whisper 下載、受管理 GGUF 目錄／發布狀態及翻譯服務；新增 GGUF 先解析公開 Hugging Face 權重的固定 revision 與 SHA256。一般網頁來源被拒絕。API key 僅可寫入，不出現在讀取結果。
+- Options 的 `desktop_management` v1 透過同一個本機 `/asr` WebSocket 讀取無密鑰快照（STT 清單、模型目錄 `models`、翻譯服務與共用預設），或帶 `expected_revision` 執行單項變更（`save_profile`、`delete_profile`、`set_defaults`）。後端回覆 `desktop_management_result`。Options 不下載或移除模型，模型安裝與移除只在桌面程式進行；預設下拉只列出已安裝的模型。一般網頁來源被拒絕。API key 僅可寫入，不出現在讀取結果。
 - Options 新增翻譯服務時由後端產生穩定 ID；編輯時沿用原 ID。OpenAI／相容 API 的 `save_profile` 在提交設定前，以實際翻譯請求依序測試 Chat completions、Responses、Messages，儲存第一個可用格式；三種皆失敗時不增加 revision，也不改寫原服務。GUI 與 Options 從同一設定快照讀取偵測結果。
 
 ## 舊資料遷移
@@ -84,9 +84,13 @@ v2 擷取由後端解析最新預設，並於 loading／capturing 狀態附上�
 - GUI 與擴充功能都提供 Light／Dark／System；偏好各自持久保存，離線仍可切換。
 - 主要按鈕為藍色實心、次要按鈕為淡色或描邊、危險動作使用紅色；不把所有按鈕做成同等強度。
 - 常用操作使用清楚標籤；協定、進階 runtime 與詳細錯誤放在次要資訊層。
-- Target language 使用獨立輸入列，建議語言可選也可自由輸入，說明置於下方或提示區。
+- Target language 使用單一下拉，不做「繼承／覆寫」模式切換：第一項顯示桌面程式實際的語言（「Same as desktop · …」），接著是常用語言與「Other language…」，後者才出現自由輸入框；未列在建議中的語言仍然有效。翻譯服務、語音模型與翻譯時機用同一種寫法。
+- 擴充功能 popup 與 Options 的外觀跟桌面一致：中性灰（深色 `#202020` / `#2b2b2b`）、一種藍、卡片 8px 與控制項 5px 圓角、沒有漸層、光暈與 eyebrow 小標、標籤一般大小寫 12px、字重最多 600。主按鈕文字用 `--primary-text` token（與藍底的對比在 `tests/contrast.test.js` 守住）；焦點環是 2px 底色間隙加 2px 藍環，主按鈕上也看得見。Overlay 是影片字幕面，不套這組樣式。
 - 刷新是同步狀態列上的次要動作；不塞入模型下拉選單的邊框內。
-- Popup 以 380×560 為最低實測基準，開始／停止固定可見；Options 承載偏好與遷移資訊。
+- Popup 以 380×560 為最低實測基準，開始／停止固定可見；Popup 只顯示連線狀態，不放連線網址；Options 承載連線網址、偏好與遷移資訊。
+- 使用者看得到的文字用人話：不顯示內部代號（例如 `local:qwen-2b`）與工程用語（catalog、inherit、partials）；縮寫也算工程用語：語音辨識模型一律寫 Speech recognition model(s)（導覽可簡寫 Speech recognition），不寫 STT，也不單寫 Speech（容易被讀成語音合成）；桌面導覽、卡片標題、擴充功能與後端錯誤訊息都一致。磁碟資料夾 `Speech models\` 是例外，名稱不改。
 - 所有佈景涵蓋輸入、原生選單、焦點、停用、警告、錯誤與捲動區；縮放與鍵盤可操作。
+- 桌面程式的版面底線：設定頁的數字框固定寬度（132px）且靠左，同一頁各卡片的欄位左緣一致；說明文字常駐在欄位下方，不靠懸停；頁尾說明與狀態列同一字級；服務清單第二行是「模型 · 主機」，需要注意的狀態放最前面；語言清單用英文名稱，目標語言建議與擴充功能 popup 同一份（測試比對 `LANGUAGE_OPTIONS`）；共用的目標語言放在 Translation services 頁頂端的「Defaults for new captures」，只寫 `translation.target_language`，不屬於任何本機模型。
+- 擴充功能的可及性底線（`popup.css` 的色彩 token 兩邊共用，`tests/contrast.test.js` 守住）：文字對比至少 4.5:1（淺色與深色都算）；滑桿、核取方塊與 `<summary>` 的點擊區至少 24px；Options 左側導覽以 `aria-current="location"` 標出目前區塊；重複出現的列按鈕可及名稱帶對象（「Edit Ollama · llama3」），畫面文字不變；popup 狀態橫幅文字被截斷時，底部有柔和的邊緣提示，捲到底就消失。
 
 開放集合由目錄與 adapter 處理；佈景模式、協定版本、狀態名稱等有限集合使用集中定義。測試必須包含自訂模型、未列在建議中的語言與遷移衝突，避免僅對附圖範例有效。

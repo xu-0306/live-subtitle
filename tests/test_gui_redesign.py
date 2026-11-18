@@ -81,7 +81,7 @@ def test_sidebar_stack_keeps_existing_page_contract_and_scrolls(tmp_path: Path) 
     assert [window.tabs.tabText(i) for i in range(window.tabs.count())] == [
         "Server",
         "Local translation",
-        "STT models",
+        "Speech recognition",
         "Tuning",
         "Settings",
         "Translation services",
@@ -258,8 +258,8 @@ def test_theme_preference_is_saved_and_service_catalog_preserves_kinds(tmp_path:
     _app()
     window = _window(tmp_path)
     assert window.service_catalog.profile_list.count() == 2
-    assert "OLLAMA" in window.service_catalog.profile_list.item(0).text()
-    assert "NLLB" in window.service_catalog.profile_list.item(1).text()
+    assert "OLLAMA" not in window.service_catalog.profile_list.item(0).text()
+    assert "Missing" in window.service_catalog.profile_list.item(1).text()
 
     window._set_theme_mode("dark", persist=True)
     assert window._save_config_to_disk()

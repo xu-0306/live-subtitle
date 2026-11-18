@@ -109,11 +109,20 @@ def test_persistence_failure_stops_ready_runtime(app, tmp_path, monkeypatch):
 
 def test_config_activation_does_not_mutate_prior_or_override_new_external_choice():
     before = {'translation': {'engine': 'ollama', 'custom': 'keep'}, 'custom_root': {'keep': True}}
-    updated = lc.activate_config(before, 'model', {'context': 2048}, {'base_url': 'http://127.0.0.1:18080', 'api_key': 'token'}, 'ja')
+    updated = lc.activate_config(before, 'model', {'context': 2048}, {'base_url': 'http://127.0.0.1:18080', 'api_key': 'token'})
     assert before['translation']['engine'] == 'ollama'
     assert updated['custom_root'] == before['custom_root']
     updated['translation'] = {'engine': 'vllm'}
     assert lc.deactivate_config(updated)['translation'] == {'engine': 'vllm'}
+
+
+def test_removing_a_local_model_clears_only_its_own_default_choice():
+    local = {'model_id': 'a', 'installed_models': ['a']}
+    none = {'kind': 'none', 'id': 'none'}
+    own = {'local_llama': dict(local), 'translation': {'default_selection': {'kind': 'local', 'id': 'a'}}}
+    assert lc.deactivate_config(own)['translation']['default_selection'] == none
+    other = {'local_llama': dict(local), 'translation': {'default_selection': {'kind': 'profile', 'id': 'svc'}}}
+    assert lc.deactivate_config(other)['translation']['default_selection'] == {'kind': 'profile', 'id': 'svc'}
 
 
 def test_recommended_model_becomes_default_only_after_verified_install():
@@ -127,7 +136,6 @@ def test_recommended_model_becomes_default_only_after_verified_install():
         model_id,
         {'gpu_layers': -1},
         {'installed': True},
-        'zh-TW',
     )
     assert updated['translation']['default_selection'] == {
         'kind': 'local',
@@ -189,7 +197,7 @@ def test_real_mainwindow_exposes_local_tab_and_shutdown(app, tmp_path, monkeypat
     # Publishing model availability must not restart existing captures.
     calls = []
     monkeypatch.setattr(window, '_restart_backend', lambda: calls.append('restart'))
-    result = lc.activate_config(cfg, 'qwen25-1.5b-q4', {}, {'base_url': 'http://127.0.0.1:18080', 'api_key': 'random'}, 'zh-TW')
+    result = lc.activate_config(cfg, 'qwen25-1.5b-q4', {}, {'base_url': 'http://127.0.0.1:18080', 'api_key': 'random'})
     window._persist_local_config(result)
     window.local_models.activated.emit(result)
     assert calls == []
@@ -197,19 +205,16 @@ def test_real_mainwindow_exposes_local_tab_and_shutdown(app, tmp_path, monkeypat
     window.close()
 
 
-def test_custom_language_roundtrip_and_gui_profile_save_do_not_activate(app, tmp_path):
+def test_gui_profile_save_does_not_activate_a_local_model(app, tmp_path):
     from gui.service_catalog_widget import ServiceCatalogWidget
-    config = {'translation': {'engine': 'noop'}, 'local_llama': {'target_language': 'Wolof'}}
+    config = {'translation': {'engine': 'noop', 'target_language': '粵語（香港）'}}
     parent = QtWidgets.QWidget()
     controller = lc.LocalModelController(parent, tmp_path, lambda: config, lambda cfg: None)
     controller.load_config(config)
-    assert controller.controls['target'].currentText() == 'Wolof'
-    controller.load_config({'translation': {'target_language': 'Esperanto'}})
-    assert controller.controls['target'].currentText() == 'Esperanto'
-    controller.controls['target'].setEditText('粵語（香港）')
     saved = controller.collect_into_config(config)
-    assert saved['local_llama']['target_language'] == '粵語（香港）'
+    # The target language belongs to the shared translation settings, not to a local model.
     assert saved['translation']['target_language'] == '粵語（香港）'
+    assert 'target_language' not in saved['local_llama']
     services = ServiceCatalogWidget()
     services.load_from_config(saved)
     services.name_input.setText('A new cloud vendor')

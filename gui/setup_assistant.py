@@ -76,7 +76,7 @@ def recommendations_for_hardware(hardware: Hardware) -> list[ModelRecommendation
                 recommended=True,
             ),
             ModelRecommendation(
-                title="Speech only / external translation",
+                title="Speech recognition only / external translation",
                 stt_model="base",
                 translation_model_id=None,
                 gpu_layers=0,
@@ -264,7 +264,7 @@ class SetupAssistantDialog(FluentDialog):
 
         note = CaptionLabel(
             "Applying saves the defaults only. Downloads do not start automatically. "
-            "You can review the files and sizes on STT models and Local translation first. "
+            "You can review the files and sizes on Speech recognition and Local translation first. "
             "The translation choice becomes the default after its verified download finishes."
         )
         note.setObjectName("mutedText")

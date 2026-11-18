@@ -21,8 +21,6 @@
   const CJK_REGEX = /[\u4e00-\u9fff\u3040-\u30ff\u31f0-\u31ff]/;
   const POSITION_STORAGE_KEY = "sttSubtitleOverlayPosition";
   const SIZE_STORAGE_KEY = "sttSubtitleOverlaySize";
-  const DEFAULT_OVERLAY_WIDTH = 640;
-  const DEFAULT_OVERLAY_HEIGHT = 160;
   const MIN_OVERLAY_WIDTH = 320;
   const MIN_OVERLAY_HEIGHT = 90;
   const RESIZE_HANDLE_SIZE = 16;
@@ -225,6 +223,7 @@
       (showPartialLine && partialLine && partialLine.original);
     originalEl.style.display = hasOriginal ? "flex" : "none";
     translatedEl.style.display = hasTranslations ? "flex" : "none";
+    cardEl.scrollTop = cardEl.scrollHeight;
   }
 
   function applyHistoryLines(value) {
@@ -489,7 +488,7 @@
   }
 
   function syncOverlaySizeFromDom() {
-    if (!cardEl) return;
+    if (!cardEl || (!cardEl.style.width && !cardEl.style.height)) return;
     const rect = cardEl.getBoundingClientRect();
     scheduleSizeSave(rect.width, rect.height);
   }
@@ -707,9 +706,9 @@
       });
     }
 
+    if (overlaySize) applyOverlaySize(overlaySize.width, overlaySize.height, false);
     if (!sizeLoaded) {
       sizeLoaded = true;
-      applyOverlaySize(DEFAULT_OVERLAY_WIDTH, DEFAULT_OVERLAY_HEIGHT, false);
       loadStoredSize().then((stored) => {
         if (!stored) return;
         applyOverlaySize(stored.width, stored.height, false);

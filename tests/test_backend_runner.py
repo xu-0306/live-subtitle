@@ -150,6 +150,30 @@ def test_runner_identity_mismatch_times_out_and_reaps_child() -> None:
     assert process.terminated
 
 
+def test_early_exit_error_is_a_short_headline_without_the_log_tail() -> None:
+    _app()
+    process = _Process()
+    process.returncode = 3
+    lines = ["INFO: first\n", "Traceback: boom\n", ""]
+    process.stdout.readline = lambda: lines.pop(0) if lines else ""
+    errors: list[str] = []
+    runner = BackendRunner(
+        "isolated.yaml",
+        "127.0.0.1",
+        8765,
+        ready_timeout=1,
+        health_interval=0.01,
+        process_factory=lambda *args, **kwargs: process,
+        health_probe=lambda _url, _instance: None,
+    )
+    runner.error.connect(errors.append)
+    runner.start()
+    assert runner.wait(2000)
+    _app().processEvents()
+    # The log lines reach the GUI through the log signal; the error stays one short line.
+    assert errors == ["Backend exited before ready (exit code 3)"]
+
+
 def test_stop_before_thread_spawn_does_not_launch_child() -> None:
     _app()
     launched = []
@@ -171,3 +195,9 @@ def test_log_sanitization_removes_credentials_and_bearer_tokens() -> None:
     assert "abc123" not in cleaned
     assert "password=pass" not in cleaned
     assert "<redacted>" in cleaned
+
+
+def test_log_sanitization_removes_credentials_typed_inside_a_url() -> None:
+    cleaned = sanitize_log_line("POST https://user:sk-secret@api.example.test/v1/chat 200")
+    assert "sk-secret" not in cleaned
+    assert "https://<redacted>@api.example.test/v1/chat" in cleaned

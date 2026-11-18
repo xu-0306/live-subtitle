@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, ComboBox, EditableComboBox, FluentIcon, MessageBoxBase,
     PrimaryPushButton, ProgressBar, PushButton, SimpleCardWidget, StrongBodyLabel,
-    ToolTipFilter, TransparentPushButton, isDarkTheme,
+    TransparentPushButton, isDarkTheme,
 )
 
 _SB = QtWidgets.QMessageBox.StandardButton
@@ -119,18 +119,13 @@ def muted_label(text: str = "", *, small: bool = False) -> QtWidgets.QLabel:
     return label
 
 
-def set_tip(text: str, *widgets: QtWidgets.QWidget) -> None:
-    """Fluent hover tip on each widget. The Fluent tip does not wrap, so break lines in ``text``."""
-    for widget in widgets:
-        widget.setToolTip(text)
-        widget.installEventFilter(ToolTipFilter(widget, showDelay=350))
-
-
-def tip_row(form: QtWidgets.QFormLayout, label: str, field: QtWidgets.QWidget, text: str) -> None:
-    """``form.addRow(label, field)`` with the same hover tip on the label and the field."""
-    caption = QtWidgets.QLabel(label)
-    set_tip(text, caption, field)
+def hint_row(form: QtWidgets.QFormLayout, label: str, field: QtWidgets.QWidget, text: str) -> None:
+    """A fixed-width label and spin box row with a persistent one-line hint under it (no hover needed)."""
+    caption = BodyLabel(label)
+    caption.setFixedWidth(180)
+    field.setFixedWidth(132)
     form.addRow(caption, field)
+    form.addRow(muted_label(text, small=True))
 
 
 def disclosure_button(text: str, target: QtWidgets.QWidget) -> TransparentPushButton:
@@ -191,6 +186,21 @@ class FreeTextComboBox(EditableComboBox):
 
     def setCurrentText(self, text: str) -> None:
         self.setText(text)
+
+    def value(self, default: str) -> str:
+        """The code of a listed suggestion, otherwise the typed text (``default`` when empty)."""
+        index = self.currentIndex()
+        if index >= 0 and self.currentText() == self.itemText(index):
+            return str(self.itemData(index))
+        return self.currentText().strip() or default
+
+    def set_value(self, value: str) -> None:
+        """Select the suggestion whose code is ``value``; any other value is shown as typed text."""
+        index = self.findData(value)
+        if index >= 0:
+            self.setCurrentIndex(index)
+        else:
+            self.setCurrentText(value)
 
     def _onReturnPressed(self) -> None:
         pass

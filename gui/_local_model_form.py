@@ -3,7 +3,6 @@ from __future__ import annotations
 from gui.fluent_kit import (
     BusyProgressBar,
     ElidedComboBox,
-    FreeTextComboBox,
     disclosure_button,
     make_card,
     muted_label,
@@ -29,7 +28,6 @@ from qfluentwidgets import (
     PushButton,
     SpinBox,
 )
-
 
 def _form(layout: QVBoxLayout) -> QFormLayout:
     form = QFormLayout()
@@ -94,22 +92,9 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     for entry in models:
         model.addItem(str(entry["name"]), userData=entry["id"])
 
-    target = FreeTextComboBox()
-    target.setMaxLength(128)
-    target.setToolTip("Enter any language name or code. Suggestions are optional; quality depends on the model.")
-    target.setObjectName("target")
-    target.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    for label, language in (
-        ("Traditional Chinese", "zh-TW"),
-        ("English", "en"),
-        ("Japanese", "ja"),
-    ):
-        target.addItem(label, userData=language)
-
     model_group = make_card("Local model")
     model_form = _form(model_group.layout())
     model_form.addRow(BodyLabel("Model"), model)
-    model_form.addRow(BodyLabel("Default target language"), target)
 
     add_model = PushButton(FluentIcon.ADD, "Add Hugging Face GGUF…")
     add_model.setObjectName("add_model")
@@ -220,7 +205,6 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
         "technical_details": technical_details,
         "info_toggle": info_toggle,
         "technical": technical,
-        "target": target,
         "install": install,
         "cancel": cancel,
         "stop": stop,

@@ -157,7 +157,7 @@ async function ensureOffscreenDocument() {
   await chrome.offscreen.createDocument({
     url: OFFSCREEN_URL,
     reasons: ["AUDIO_PLAYBACK"],
-    justification: "Capture tab audio and stream PCM to a local STT server.",
+    justification: "Capture tab audio and stream PCM to a local speech recognition server.",
   });
 }
 

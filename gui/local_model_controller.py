@@ -31,7 +31,7 @@ from gui._local_model_form import build_form
 from gui.fluent_kit import FluentDialog, muted_label
 
 
-def activate_config(config: dict, model_id: str, settings: dict, result: dict, target: str) -> dict:
+def activate_config(config: dict, model_id: str, settings: dict, result: dict) -> dict:
     updated = copy.deepcopy(config)
     local = updated.setdefault('local_llama', {})
     # Installation publishes availability only; the extension chooses inference.
@@ -41,7 +41,7 @@ def activate_config(config: dict, model_id: str, settings: dict, result: dict, t
     if model_id not in installed:
         installed.append(model_id)
     local.update(settings)
-    local.update(enabled=False, model_id=model_id, target_language=target, installed_models=installed)
+    local.update(enabled=False, model_id=model_id, installed_models=installed)
     translation = updated.setdefault('translation', {})
     if local.get('pending_default_model_id') == model_id:
         translation['default_selection'] = {'kind': 'local', 'id': model_id}
@@ -58,8 +58,11 @@ def deactivate_config(config: dict) -> dict:
     local = updated.setdefault('local_llama', {})
     local['installed_models'] = [m for m in local.get('installed_models', []) if m != local.get('model_id')]
     local['enabled'] = False
-    if updated.get('translation', {}).get('engine') == 'managed_llama':
-        updated['translation']['engine'] = 'noop'
+    translation = updated.get('translation', {})
+    if translation.get('default_selection') == {'kind': 'local', 'id': local.get('model_id')}:
+        translation['default_selection'] = {'kind': 'none', 'id': 'none'}
+    if translation.get('engine') == 'managed_llama':
+        translation['engine'] = 'noop'
     return updated
 
 
@@ -145,7 +148,6 @@ class LocalModelController(QtCore.QObject):
         self.closing = False
         self._pending_result = None
         self._pending_error = ''
-        self._target = 'zh-TW'
         self.controls['hardware'].setText('Downloads do not load the GPU. Captures check the shared Whisper memory budget. Below 8 GB: use CPU or an external service.')
         self.controls['add_model'].clicked.connect(self.add_model)
         self.controls['install'].clicked.connect(self.install)
@@ -183,13 +185,9 @@ class LocalModelController(QtCore.QObject):
             except (ValueError, TypeError):
                 self.controls[key].setValue(default)
         self._refresh_models(local.get('model_id', MODELS[0].id))
-        for key, value in [('model', local.get('model_id', MODELS[0].id)),
-                           ('target', local.get('target_language', cfg.get('translation', {}).get('target_language', 'zh-TW')))]:
-            index = self.controls[key].findData(value)
-            if index >= 0:
-                self.controls[key].setCurrentIndex(index)
-            elif key == 'target':
-                self.controls[key].setEditText(str(value))
+        index = self.controls['model'].findData(local.get('model_id', MODELS[0].id))
+        if index >= 0:
+            self.controls['model'].setCurrentIndex(index)
         self._set_busy(False)
 
     def set_root(self, root: Path) -> bool:
@@ -290,7 +288,7 @@ class LocalModelController(QtCore.QObject):
                     )
 
     def _set_busy(self, busy: bool) -> None:
-        for key in ('model', 'target', 'advanced', 'install', 'add_model'):
+        for key in ('model', 'advanced', 'install', 'add_model'):
             self.controls[key].setEnabled(not busy and not self.runtime.alive())
         self.controls['cancel'].setEnabled(busy)
         _model, available, published, _status, _reason = self._selected_model_state()
@@ -302,8 +300,7 @@ class LocalModelController(QtCore.QObject):
         self._pending_result, self._pending_error = None, ''
         settings = {key: self.controls[key].value() for key in ('context', 'gpu_layers', 'port')}
         settings['root'] = str(self.root)
-        self._target = self.target_language()
-        worker = InstallWorker(self.root, self.controls['model'].currentData(), settings,
+        worker =InstallWorker(self.root, self.controls['model'].currentData(), settings,
                                self.get_config().get('stt', {}), self.runtime, allow_download, self.get_config())
         self.worker = worker
         worker.progress.connect(self._progress)
@@ -344,7 +341,7 @@ class LocalModelController(QtCore.QObject):
                 self.controls['status'].setText(self._pending_error)
                 self.failed.emit(self._pending_error)
             elif result is not None:
-                cfg = activate_config(self.get_config(), worker.model_id, worker.settings, result, self._target)
+                cfg = activate_config(self.get_config(), worker.model_id, worker.settings, result)
                 self.persist_config(cfg)  # Atomic persistence must succeed before activation signal.
                 self.controls['status'].setText(
                     'Downloaded. Refresh desktop services in the extension and choose this model. '
@@ -407,13 +404,6 @@ class LocalModelController(QtCore.QObject):
         self.runtime.stop()
         return self.worker is None or self.worker.wait(8000)
 
-    def target_language(self) -> str:
-        combo = self.controls['target']
-        index = combo.currentIndex()
-        if index >= 0 and combo.currentText() == combo.itemText(index):
-            return str(combo.itemData(index))
-        return combo.currentText().strip() or 'zh-TW'
-
     def collect_into_config(self, config: dict) -> dict:
         cfg = copy.deepcopy(config)
         local = cfg.setdefault('local_llama', {})
@@ -426,9 +416,7 @@ class LocalModelController(QtCore.QObject):
                 cfg['translation']['engine'] = 'noop'
                 cfg['translation'].pop('managed_llama', None)
         local.update({key: self.controls[key].value() for key in ('context', 'gpu_layers', 'port')})
-        local.update(root=str(self.root), target_language=self.target_language(),
-                     model_id=self.controls['model'].currentData())
-        cfg.setdefault('translation', {})['target_language'] = self.target_language()
+        local.update(root=str(self.root), model_id=self.controls['model'].currentData())
         return cfg
 
     def _refresh_models(self, selected=None):

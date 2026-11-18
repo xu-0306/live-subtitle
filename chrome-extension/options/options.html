@@ -9,34 +9,24 @@
 <div class="settings-layout">
   <aside class="settings-sidebar" aria-label="Settings sections">
     <div class="settings-brand"><div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div><div><strong>Live Subtitle</strong><small>Settings</small></div></div>
-    <nav class="settings-nav"><a href="#connection">Connection</a><a href="#defaults">Desktop defaults</a><a href="#speech">Speech models</a><a href="#local">Local translation</a><a href="#services">Translation services</a><a href="#appearance">Subtitle appearance</a></nav>
-    <p class="sidebar-note">Models and services are saved to the same settings file used by the desktop app. New captures use the latest choices.</p>
+    <nav class="settings-nav"><a href="#connection">Connection</a><a href="#defaults">Defaults for new captures</a><a href="#services">Translation services</a><a href="#appearance">Subtitle appearance</a></nav>
+    <p class="sidebar-note">Defaults and services are saved to the same settings file used by the desktop app. New captures use the latest choices.</p>
   </aside>
   <main class="settings-main">
-    <header class="settings-topbar"><div><p class="eyebrow">Workspace settings</p><h1>Models &amp; services</h1><p>Manage the backend directly, even when the desktop window is closed.</p></div><label class="theme-control" for="themeSelect">Theme <select id="themeSelect" class="inline-mode"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></header>
+    <header class="settings-topbar"><div><h1>Defaults &amp; services</h1><p>Manage translation services and new-capture defaults while the backend is running. Install and remove models in the desktop app. Closing the desktop app stops the backend it started.</p></div><label class="theme-control" for="themeSelect">Theme <select id="themeSelect" class="inline-mode"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></header>
     <div id="status" class="status-banner settings-status" data-state="idle" role="status" aria-live="polite">Connecting to the backend…</div>
     <section id="connection" class="card settings-panel">
-      <div class="panel-heading"><div><p class="eyebrow">Connection</p><h2>Desktop backend</h2></div><span id="connectionBadge" class="panel-badge" data-state="idle">Connecting</span></div>
+      <div class="panel-heading"><div><h2>Desktop backend</h2></div><span id="connectionBadge" class="panel-badge" data-state="idle">Connecting</span></div>
       <div class="setting-row"><label for="wsUrl">WebSocket URL</label><div class="inline-actions"><input id="wsUrl" class="text-control" type="url" spellcheck="false" autocomplete="off" placeholder="ws://127.0.0.1:8765/asr" /><button id="refreshSettings" class="secondary-button" type="button">Refresh</button></div></div>
       <p id="revisionLabel" class="field-hint">Waiting for shared settings</p>
     </section>
     <section id="defaults" class="card settings-panel">
-      <div class="panel-heading"><div><p class="eyebrow">Shared with desktop</p><h2>New capture defaults</h2></div><span class="panel-badge">Saved to backend</span></div>
-      <div class="settings-fields two-column"><label>Speech model<select id="defaultStt" class="native-control"></select></label><label>Translation service<select id="defaultTranslation" class="native-control"></select></label><label>Target language<input id="defaultLanguage" class="text-control" type="text" maxlength="128" placeholder="zh-TW or any language" /></label><label class="checkbox-row default-partial"><input id="defaultPartial" type="checkbox" /> Include partial translations</label></div>
-      <div class="panel-actions"><button id="saveDefaults" class="primary-button" type="button">Save defaults</button><span class="field-hint">Available installed models only</span></div>
-    </section>
-    <section id="speech" class="card settings-panel">
-      <div class="panel-heading"><div><p class="eyebrow">Whisper</p><h2>Speech models</h2></div><span id="speechCount" class="panel-badge">—</span></div>
-      <p class="card-copy">Download a model before selecting it as the desktop default. Removing a download keeps the model in this built-in list.</p><div id="speechList" class="management-list" aria-live="polite"></div>
-    </section>
-    <section id="local" class="card settings-panel">
-      <div class="panel-heading"><div><p class="eyebrow">On-device · llama.cpp</p><h2>Local translation models</h2></div><span id="localCount" class="panel-badge">—</span></div>
-      <p class="card-copy">Downloads are verified before a model appears in extension choices. Removing a choice or custom entry keeps downloaded files.</p><div id="localList" class="management-list" aria-live="polite"></div>
-      <details id="addLocalPanel" class="editor-panel"><summary>Add public Hugging Face GGUF</summary><form id="addLocalForm" class="settings-fields"><label>Repository<input id="localRepo" class="text-control" required placeholder="owner/repository" /></label><label>GGUF file path<input id="localFilename" class="text-control" required placeholder="model-Q4_K_M.gguf" /></label><p class="field-hint">Public GGUF only. The backend pins the revision and SHA256; repository code is never run.</p><button class="primary-button" type="submit">Add model</button></form></details>
-      <form id="editLocalForm" class="editor-panel settings-fields" hidden><strong>Edit custom model</strong><input id="editLocalId" type="hidden" /><label>Name<input id="editLocalName" class="text-control" maxlength="160" required /></label><label>Notes<textarea id="editLocalNotes" class="text-control" rows="3" maxlength="1000"></textarea></label><div class="panel-actions"><button class="primary-button" type="submit">Save model</button><button id="cancelLocalEdit" class="secondary-button" type="button">Cancel</button></div></form>
+      <div class="panel-heading"><div><h2>Defaults for new captures</h2></div><span class="panel-badge">Saved to backend</span></div>
+      <div class="settings-fields two-column"><label>Speech recognition model<select id="defaultStt" class="native-control"></select></label><label>Translation service<select id="defaultTranslation" class="native-control"></select></label><label>Target language<input id="defaultLanguage" class="text-control" type="text" maxlength="128" placeholder="zh-TW or any language" /></label><label class="checkbox-row default-partial"><input id="defaultPartial" type="checkbox" /> Include partial translations</label></div>
+      <div class="panel-actions"><button id="saveDefaults" class="primary-button" type="button">Save defaults</button><span class="field-hint">Only models installed in the desktop app are listed</span></div>
     </section>
     <section id="services" class="card settings-panel">
-      <div class="panel-heading"><div><p class="eyebrow">Cloud &amp; local connections</p><h2>Translation services</h2></div><span id="serviceCount" class="panel-badge">—</span></div>
+      <div class="panel-heading"><div><h2>Translation services</h2></div><span id="serviceCount" class="panel-badge">—</span></div>
       <p class="card-copy">Add, edit or remove service profiles here. API keys stay in shared backend settings and are never sent back to this page.</p><div id="serviceList" class="management-list" aria-live="polite"></div>
       <details id="serviceEditor" class="editor-panel"><summary id="serviceEditorTitle">Add translation service</summary><form id="serviceForm" class="settings-fields two-column">
         <input id="serviceId" type="hidden" /><label>Display name<input id="serviceName" class="text-control" required maxlength="160" /></label>
@@ -48,12 +38,12 @@
       </form></details>
     </section>
     <section id="migration" class="card settings-panel" hidden>
-      <div class="panel-heading"><div><p class="eyebrow">One-time upgrade</p><h2>Import older saved services</h2></div><span class="panel-badge">Browser storage</span></div>
+      <div class="panel-heading"><div><h2>Import older saved services</h2></div><span class="panel-badge">Browser storage</span></div>
       <p id="migrationSummary" class="card-copy">Move legacy extension profiles into shared desktop settings.</p>
       <div class="panel-actions"><button id="migrateProfiles" class="secondary-button" type="button">Import saved services</button><span id="migrationStatus" class="field-hint" role="status" aria-live="polite"></span></div>
     </section>
     <section id="appearance" class="card settings-panel">
-      <div class="panel-heading"><div><p class="eyebrow">This browser</p><h2>Subtitle appearance</h2></div><span class="panel-badge">Saved locally</span></div>
+      <div class="panel-heading"><div><h2>Subtitle appearance</h2></div><span class="panel-badge">Saved locally</span></div>
       <div class="appearance-grid"><div><div class="range-row"><label for="subtitleOriginalSize">Original text</label><output id="subtitleOriginalSizeValue">100%</output></div><input id="subtitleOriginalSize" type="range" min="0.7" max="1.6" step="0.1" value="1" /></div><div><div class="range-row"><label for="subtitleTranslatedSize">Translated text</label><output id="subtitleTranslatedSizeValue">100%</output></div><input id="subtitleTranslatedSize" type="range" min="0.7" max="1.6" step="0.1" value="1" /></div><div><div class="range-row"><label for="overlayOpacity">Overlay opacity</label><output id="overlayOpacityValue">85%</output></div><input id="overlayOpacity" type="range" min="0.35" max="1" step="0.05" value="0.85" /></div><div><div class="range-row"><label for="subtitleHistoryLines">History lines</label><output id="subtitleHistoryLinesValue">2</output></div><input id="subtitleHistoryLines" type="range" min="1" max="4" step="1" value="2" /></div></div><label class="checkbox-row"><input id="subtitleShowPartial" type="checkbox" checked /> Show partial subtitle line</label>
     </section>
   </main>

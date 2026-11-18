@@ -12,6 +12,7 @@ import copy
 import uuid
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from qfluentwidgets import (
@@ -255,7 +256,7 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         key_layout.setContentsMargins(0, 0, 0, 0)
         key_layout.addWidget(self.api_key_input, 1)
         key_layout.addWidget(self.show_key_btn)
-        self.availability_label = BodyLabel("Configured")
+        self.availability_label = BodyLabel("Ready to test")
         self.availability_label.setObjectName("statusBadge")
         self.default_check = CheckBox("Use as desktop default for the next capture")
         self.default_check.setToolTip(
@@ -548,7 +549,19 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         self.profile_list.clear()
         for index, profile in enumerate(self._profiles):
             state = self._profile_state(profile)
-            item = QtWidgets.QListWidgetItem(f"{profile['name']}\n{profile['kind'].upper()} · {state}")
+            details = str(profile.get("model") or "").strip() or "No model set"
+            endpoint = str(profile.get("base_url") or "").strip()
+            if endpoint:
+                try:
+                    host = urlsplit(endpoint if "://" in endpoint else "//" + endpoint).netloc.rsplit("@", 1)[-1]
+                except ValueError:
+                    host = ""
+                if host:
+                    details += f" · {host}"
+            if state in {"Needs setup", "Missing"}:
+                # First, so a long model name cannot elide the warning.
+                details = f"{state} · {details}"
+            item = QtWidgets.QListWidgetItem(f"{profile['name']}\n{details}")
             if index == self._active_index and self.has_unsaved_changes():
                 item.setText(item.text() + " · Unsaved")
             item.setData(QtCore.Qt.UserRole, profile["id"])
@@ -782,5 +795,5 @@ class ServiceCatalogWidget(QtWidgets.QWidget):
         if kind == "nllb":
             return "Installed" if profile.get("installed") and model else "Needs setup"
         if kind in {"api", "ollama"}:
-            return "Configured" if endpoint and model else "Needs setup"
-        return "Configured" if endpoint or model else "Needs setup"
+            return "Ready to test" if endpoint and model else "Needs setup"
+        return "Ready to test" if endpoint or model else "Needs setup"

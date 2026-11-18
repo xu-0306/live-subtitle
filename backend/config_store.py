@@ -144,25 +144,6 @@ def _process_lock(path: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _read_document(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as handle:
-        if path.suffix.casefold() == ".json":
-            data = json.load(handle)
-        else:
-            data = yaml.safe_load(handle)
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Configuration root must be a mapping: {path}")
-    # The revision marker is committed in the same atomic document as the
-    # config.  Strip it before returning so runtime callers see the historic
-    # config shape and never accidentally pass storage metadata to a provider.
-    data.pop(_STORE_META_KEY, None)
-    return data
-
-
 def _read_raw_document(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -170,7 +151,17 @@ def _read_raw_document(path: Path) -> dict[str, Any]:
         if path.suffix.casefold() == ".json":
             data = json.load(handle)
         else:
-            data = yaml.safe_load(handle)
+            try:
+                data = yaml.safe_load(handle)
+            except yaml.YAMLError as exc:
+                # A YAML error quotes the offending line, which may hold an API
+                # key.  Report only where it is, as the same ValueError callers
+                # already handle for other unreadable configs.
+                mark = getattr(exc, "problem_mark", None)
+                where = f" (line {mark.line + 1})" if mark else ""
+                raise ValueError(
+                    f"{path.name} is not valid YAML{where}. Fix or restore it, then try again."
+                ) from None
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -276,8 +267,10 @@ def _write_revision(path: Path, revision: int, document: Mapping[str, Any] | Non
 def load_snapshot(path: str | os.PathLike[str]) -> tuple[dict[str, Any], int]:
     """Load a config and its optimistic-concurrency revision.
 
-    Reading is side-effect free.  Config files created before this store
-    existed start at revision ``0`` and receive a sidecar on their first save.
+    Reading is side-effect free.  A file without a revision marker (created
+    before this store existed, or edited by hand) is identified by a digest of
+    its content, so a stale snapshot can never match it; its first save adds
+    the marker.  A file that does not exist yet is revision ``0``.
     """
 
     config_path = _path_value(path)

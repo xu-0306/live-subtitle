@@ -87,14 +87,14 @@ python -m pip install -r gui\requirements.txt
     <td width="50%">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/gui-local-dark.png">
-        <img src="docs/media/gui-local-light.png" alt="Local translation 頁面：選擇在本機執行的翻譯模型和預設目標語言，再按下載">
+        <img src="docs/media/gui-local-light.png" alt="Local translation 頁面：選擇在本機執行的翻譯模型，再按下載">
       </picture>
       <p align="center"><em>本機翻譯模型</em></p>
     </td>
     <td width="50%">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/gui-services-dark.png">
-        <img src="docs/media/gui-services-light.png" alt="Translation services 頁面：已儲存的連線清單，例如 Ollama 和 OpenAI 相容 API，右側是連線設定和測試連線按鈕">
+        <img src="docs/media/gui-services-light.png" alt="Translation services 頁面：最上方是預設目標語言，下方是已儲存的連線清單，例如 Ollama 和 OpenAI 相容 API，右側是連線設定和測試連線按鈕">
       </picture>
       <p align="center"><em>翻譯服務連線</em></p>
     </td>
@@ -105,7 +105,7 @@ python -m pip install -r gui\requirements.txt
 | --- | --- |
 | **Server** | 啟動、停止、重新啟動本機伺服器，查看日誌。 |
 | **Local translation** | 下載並管理在本機執行的翻譯模型。 |
-| **STT models** | 選擇 Whisper 語音辨識模型。 |
+| **Speech recognition** | 選擇 Whisper 語音辨識模型。 |
 | **Tuning** | 調整字幕與串流行為。 |
 | **Translation services** | 儲存並測試 Ollama、OpenAI 相容 API、vLLM 等服務的連線。 |
 | **Settings** | 主題、設定與模型存放位置、模型推薦。 |
@@ -148,11 +148,11 @@ flowchart LR
 
 ### 模型與程式資料
 
-發佈套件不含模型。語音模型在首次使用時下載，也可從 GUI 或擴充功能的 Options 預先下載；本機翻譯模型從 **Local translation** 頁或 Options 下載。
+發佈套件不含模型。語音模型在首次使用時下載，也可從 GUI 預先下載；本機翻譯模型從 **Local translation** 頁下載。
 
 首次啟動時，設定助手透過 `nvidia-smi` 讀取 NVIDIA 顯示卡的總記憶體與可用記憶體，合併計算 Whisper 與本機翻譯的需求，推薦低延遲、日常或高品質組合。低於 8 GB 或沒有支援的 NVIDIA 顯示卡時，建議較小的 Whisper 搭配 CPU 翻譯，並說明外部翻譯服務的選項。可從 **Settings → Recommend model setup** 重新偵測。
 
-套用推薦只會儲存選擇，不會自動下載大型檔案；請在 **STT models** 與 **Local translation** 確認大小後下載。推薦的本機翻譯模型需下載並通過雜湊檢查後才會成為預設。
+套用推薦只會儲存選擇，不會自動下載大型檔案；請在 **Speech recognition** 與 **Local translation** 確認大小後下載。推薦的本機翻譯模型需下載並通過雜湊檢查後才會成為預設。
 
 Windows 預設資料結構：
 
@@ -169,7 +169,7 @@ Windows 預設資料結構：
 
 ### 不使用桌面程式
 
-直接啟動後端時，可在擴充功能的 **Options** 頁完成常用設定：下載或移除 Whisper 模型、下載或發布本機 GGUF 模型、新增及編輯公開的 Hugging Face GGUF 項目、管理翻譯服務連線，以及儲存共用的語音、翻譯與目標語言預設值。Options 僅管理本機後端；金鑰可交由後端保存，但後端不會回傳金鑰。桌面程式沒有未儲存的修改時，會自動載入這些變更。
+直接啟動後端時，可在擴充功能的 **Options** 頁完成常用設定：管理翻譯服務連線，以及儲存共用的語音、翻譯與目標語言預設值。模型的下載、發布與移除在桌面程式進行。Options 僅管理本機後端；金鑰可交由後端保存，但後端不會回傳金鑰。桌面程式沒有未儲存的修改時，會自動載入這些變更。
 
 ### 設定的優先順序
 

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import copy
 import uuid
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +17,7 @@ from .config_store import (
     save_config,
     service_profiles,
 )
-from .local_catalog import MODELS, ModelSpec, get_model, list_models, model_artifact_state
+from .local_catalog import get_model, model_artifact_state
 from .model_manager import WHISPER_MODEL_URLS, resolve_stt_model_target
 
 
@@ -35,31 +34,6 @@ def _local_root(config: dict[str, Any], default_root: Path) -> Path:
 
 def snapshot(config_path: Path, service: Any) -> dict[str, Any]:
     config, revision = load_snapshot(config_path)
-    local = config.get("local_llama") or {}
-    root = _local_root(config, service.root)
-    published = set(local.get("installed_models") or [])
-    if local.get("enabled") and local.get("model_id"):
-        published.add(str(local["model_id"]))
-    local_models = []
-    builtin = {model.id for model in MODELS}
-    for model in list_models(config):
-        present, status, reason = model_artifact_state(root, model)
-        local_models.append({
-            "id": model.id,
-            "name": model.name,
-            "repo": model.repo,
-            "revision": model.revision,
-            "files": [item.filename for item in model.files],
-            "size": model.size,
-            "estimated_vram_mb": model.estimated_vram_mb,
-            "license": model.license,
-            "notes": model.notes,
-            "custom": model.id not in builtin,
-            "installed": present,
-            "published": present and model.id in published,
-            "status": status,
-            **({"reason": reason} if reason else {}),
-        })
     profiles = []
     for profile in service_profiles(config):
         visible = public_profile(profile)
@@ -78,7 +52,7 @@ def snapshot(config_path: Path, service: Any) -> dict[str, Any]:
         "server_id": catalog["server_id"],
         "instance_id": catalog["instance_id"],
         "stt_models": catalog["stt_models"],
-        "local_models": local_models,
+        "models": catalog["models"],
         "profiles": profiles,
         "defaults": catalog["defaults"],
     }
@@ -140,7 +114,6 @@ def mutate(config_path: Path, service: Any, action: str, data: dict[str, Any], e
         from .config_store import RevisionConflictError
         raise RevisionConflictError(expected_revision, revision)
     updated = copy.deepcopy(config)
-    local = updated.setdefault("local_llama", {})
     translation = updated.setdefault("translation", {})
     root = _local_root(updated, service.root)
     item_id = str(data.get("id") or "").strip()
@@ -159,53 +132,17 @@ def mutate(config_path: Path, service: Any, action: str, data: dict[str, Any], e
         translation["service_profiles"] = [item for item in existing if item["id"] != item_id]
         if translation.get("default_selection") == {"kind": "profile", "id": item_id}:
             translation["default_selection"] = {"kind": "none", "id": "none"}
-    elif action == "rename_local":
-        custom = local.get("custom_models") or []
-        entry = next((item for item in custom if item.get("id") == item_id), None)
-        if entry is None:
-            raise ValueError("Only custom GGUF entries can be edited.")
-        name = str(data.get("name") or "").strip()
-        if not name or len(name) > 160:
-            raise ValueError("Enter a model name up to 160 characters.")
-        entry["name"] = name
-        entry["notes"] = str(data.get("notes") or "")[:1000]
-    elif action == "delete_local":
-        custom = local.get("custom_models") or []
-        if item_id not in {item.get("id") for item in custom}:
-            raise ValueError("Only custom GGUF entries can be removed.")
-        local["custom_models"] = [item for item in custom if item.get("id") != item_id]
-        local["installed_models"] = [value for value in local.get("installed_models", []) if value != item_id]
-        if local.get("model_id") == item_id:
-            local["enabled"] = False
-            local["model_id"] = MODELS[0].id
-        if translation.get("default_selection") == {"kind": "local", "id": item_id}:
-            translation["default_selection"] = {"kind": "none", "id": "none"}
-    elif action == "publish_local":
-        model = get_model(item_id, updated)
-        present, _, _ = model_artifact_state(root, model)
-        if bool(data.get("published")) and not present:
-            raise ValueError("Download and verify this model before publishing it.")
-        installed = set(local.get("installed_models") or [])
-        if bool(data.get("published")):
-            installed.add(item_id)
-        else:
-            installed.discard(item_id)
-            if local.get("model_id") == item_id:
-                local["enabled"] = False
-            if translation.get("default_selection") == {"kind": "local", "id": item_id}:
-                translation["default_selection"] = {"kind": "none", "id": "none"}
-        local["installed_models"] = sorted(installed)
     elif action == "set_defaults":
         if "stt_model" in data:
             model_id = str(data["stt_model"] or "").strip()
             if model_id not in WHISPER_MODEL_URLS and model_id not in {
                 item["id"] for item in service._stt_catalog(updated)
             }:
-                raise ValueError("Unknown speech model.")
+                raise ValueError("Unknown speech recognition model.")
             stt = updated.setdefault("stt", {})
             target = resolve_stt_model_target({**stt, "model": model_id, "model_path": None})
             if target is None or not target.is_file():
-                raise ValueError("Download the speech model before selecting it as default.")
+                raise ValueError("Download the speech recognition model before selecting it as default.")
             stt["model"] = model_id
             stt.pop("model_path", None)
         if "translation_selection" in data:
@@ -223,14 +160,3 @@ def mutate(config_path: Path, service: Any, action: str, data: dict[str, Any], e
     else:
         raise ValueError("Unknown management action.")
     return save_config(config_path, updated, expected_revision=expected_revision)
-
-
-def register_model(config_path: Path, model: ModelSpec, expected_revision: int) -> int:
-    config, revision = load_snapshot(config_path)
-    if revision != expected_revision:
-        from .config_store import RevisionConflictError
-        raise RevisionConflictError(expected_revision, revision)
-    if model.id in {item.id for item in list_models(config)}:
-        raise ValueError("This GGUF model is already in the catalog.")
-    config.setdefault("local_llama", {}).setdefault("custom_models", []).append(asdict(model))
-    return save_config(config_path, config, expected_revision=expected_revision)
