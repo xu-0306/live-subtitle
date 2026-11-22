@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$Python = ".venv\Scripts\python.exe"
+    [string]$Python = ".venv\Scripts\python.exe",
+    # ffmpeg.exe to bundle (default: the first one on PATH). Without it the release fails on
+    # machines that have no FFmpeg of their own.
+    [string]$FfmpegPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -66,6 +69,21 @@ $env:PATH = (($originalPath -split ";") | Where-Object {
     $_ -and $_ -notmatch "(?i)[\\/]\.cache[\\/]codex-runtimes[\\/]"
 }) -join ";"
 
+if (-not $FfmpegPath) {
+    # PATH was filtered above, so an ffmpeg inside a developer tool's runtime is never picked.
+    $foundFfmpeg = Get-Command ffmpeg.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($foundFfmpeg) { $FfmpegPath = $foundFfmpeg.Source }
+}
+if (-not $FfmpegPath -or -not (Test-Path -LiteralPath $FfmpegPath -PathType Leaf)) {
+    throw "ffmpeg.exe not found. Put it on PATH or pass -FfmpegPath; the release must bundle it."
+}
+$FfmpegPath = [IO.Path]::GetFullPath($FfmpegPath)
+& $FfmpegPath -version | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "ffmpeg.exe does not run: $FfmpegPath"
+}
+$env:LIVE_SUBTITLE_FFMPEG = $FfmpegPath
+
 Push-Location $root
 try {
     & $pythonPath -m PyInstaller --clean --noconfirm "live-subtitle.spec"
@@ -76,6 +94,15 @@ try {
     $exePath = Join-Path $appDir "live-subtitle.exe"
     if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
         throw "Build completed without the expected executable: $exePath"
+    }
+
+    $bundledFfmpeg = Join-Path $appDir "_internal\ffmpeg\ffmpeg.exe"
+    if (-not (Test-Path -LiteralPath $bundledFfmpeg -PathType Leaf)) {
+        throw "Build completed without the bundled FFmpeg: $bundledFfmpeg"
+    }
+    & $bundledFfmpeg -version | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bundled ffmpeg.exe does not run: $bundledFfmpeg"
     }
 
     $collectToc = Join-Path $root "build\live-subtitle\COLLECT-00.toc"
@@ -151,6 +178,7 @@ try {
     Write-Host "SHA-256:    $extensionHash"
 }
 finally {
+    Remove-Item Env:LIVE_SUBTITLE_FFMPEG -ErrorAction SilentlyContinue
     $env:PATH = $originalPath
     if ($null -eq $originalQtPlatform) {
         Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue

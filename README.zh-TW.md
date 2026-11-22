@@ -223,5 +223,6 @@ Windows 預設資料結構：
 
 - [WhisperLiveKit](https://github.com/QuentinFuxa/WhisperLiveKit) — 串流語音辨識引擎。
 - [PySide6-Fluent-Widgets](https://pypi.org/project/PySide6-Fluent-Widgets/) — 桌面程式介面元件（GPLv3），已包含在 Windows 套件中。
+- [FFmpeg](https://ffmpeg.org/) — 解碼擷取到的音訊。Windows 套件內附未修改的 GPLv3 建置（[gyan.dev](https://www.gyan.dev/ffmpeg/builds/)），說明見 `_internal\ffmpeg\ffmpeg-NOTICE.txt`。
 
 Live Subtitle 以 [GNU General Public License v3.0](LICENSE) 釋出，其他隨附的第三方元件仍適用各自的授權。

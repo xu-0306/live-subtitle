@@ -1,3 +1,5 @@
+import os
+import shutil
 from pathlib import Path
 
 from PyInstaller.utils.hooks import (
@@ -18,7 +20,16 @@ whisper_hiddenimports = collect_submodules(
     filter=lambda name: ".tests" not in name and not name.endswith(".test"),
 )
 
+# WhisperLiveKit decodes the extension's WebM stream by running a plain "ffmpeg", so
+# the release must carry one or a machine without FFmpeg fails with "FFmpeg state: FAILED".
+# backend/ffmpeg_path.py puts this folder on PATH at startup.
+ffmpeg_exe = os.environ.get("LIVE_SUBTITLE_FFMPEG") or shutil.which("ffmpeg")
+if not ffmpeg_exe or not Path(ffmpeg_exe).is_file():
+    raise SystemExit("ffmpeg.exe not found: put it on PATH or set LIVE_SUBTITLE_FFMPEG before building.")
+
 datas = [
+    (ffmpeg_exe, "ffmpeg"),
+    (str(ROOT / "ffmpeg-NOTICE.txt"), "ffmpeg"),
     (str(ROOT / "backend" / "config.yaml"), "backend"),
     (str(ROOT / "backend" / "local_models.json"), "backend"),
     # The app's version number lives only here; gui/update_check.py reads it for the update check.

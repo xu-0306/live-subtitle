@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Live Subtitle",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Turn tab audio into live subtitles with optional translation through a local backend.",
   "permissions": ["tabCapture", "activeTab", "offscreen", "storage", "scripting", "alarms"],
   "host_permissions": ["<all_urls>"],

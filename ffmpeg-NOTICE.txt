@@ -1,0 +1,20 @@
+FFmpeg notice
+=============
+
+The file ffmpeg.exe in this folder is an unmodified FFmpeg build. Live Subtitle starts it
+as a separate program to turn the captured browser audio (WebM/Opus) into raw audio for
+speech recognition. Run "ffmpeg.exe -version" to see its exact version and build options.
+
+The Windows release uses the "full" static build from https://www.gyan.dev/ffmpeg/builds/
+which is configured with --enable-gpl --enable-version3, so it is licensed under the
+GNU General Public License version 3 (GPLv3). The licence text is at
+https://www.gnu.org/licenses/gpl-3.0.txt and FFmpeg's own licensing notes are at
+https://ffmpeg.org/legal.html .
+
+FFmpeg source code for that build is available from https://ffmpeg.org/download.html
+(git: https://git.ffmpeg.org/ffmpeg.git) and the build scripts and source links are listed
+on the gyan.dev page above. FFmpeg is a trademark of Fabrice Bellard, originator of the
+FFmpeg project.
+
+Live Subtitle itself is released under GPLv3, see LICENSE in the app folder's source repository:
+https://github.com/xu-0306/live-subtitle

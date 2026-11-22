@@ -236,7 +236,7 @@ try:
         service_profiles,
         server_id_for_config,
     )
-    from . import service_probe, settings_management
+    from . import ffmpeg_path, service_probe, settings_management
     from .config import LOCAL_TRANSLATION_MODELS_DIR_NAME, load_config, _default_app_dir
     from .translation_service import TranslationService
     from .translation_scheduler import TranslationScheduler
@@ -245,6 +245,7 @@ except ImportError:  # Fallback when running as a script.
     import model_manager
     from cache import LRUCache
     from config_store import RevisionConflictError, import_profiles, load_snapshot, normalize_service_profile, service_profiles, server_id_for_config
+    import ffmpeg_path
     import service_probe
     import settings_management
     from config import LOCAL_TRANSLATION_MODELS_DIR_NAME, load_config, _default_app_dir
@@ -2749,6 +2750,14 @@ def _stt_stall_reason(stt_session: SttSession, now: float, timeout: float) -> Op
 
 
 async def _run_selected_session(websocket, stt_cfg, translation_cfg, pending_message):
+    # A missing FFmpeg is permanent for this run: say so once and close with 1008
+    # (the extension does not retry that code) instead of loading a model and then
+    # logging a failed write for every audio chunk.
+    problem = ffmpeg_path.missing_message(bool(stt_cfg.get("pcm_input", False)))
+    if problem:
+        await _safe_send(websocket, {"type": "error", "message": problem})
+        await websocket.close(code=1008)
+        return
     try:
         stt_cfg = await _ensure_model_available(
             stt_cfg, websocket, app.state.model_download_lock
@@ -3120,6 +3129,9 @@ def main() -> None:
 
     if args.config:
         os.environ["STT_CONFIG_PATH"] = args.config
+
+    if not ffmpeg_path.ensure_ffmpeg_on_path():
+        logger.warning(ffmpeg_path.MISSING_MESSAGE)
 
     cfg = load_config(args.config)
     server_cfg = _get_server_config(cfg)

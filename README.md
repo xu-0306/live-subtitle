@@ -223,5 +223,6 @@ Please [open an issue](https://github.com/xu-0306/live-subtitle/issues) with you
 
 - [WhisperLiveKit](https://github.com/QuentinFuxa/WhisperLiveKit) — streaming speech recognition engine.
 - [PySide6-Fluent-Widgets](https://pypi.org/project/PySide6-Fluent-Widgets/) — desktop app components (GPLv3), bundled in the Windows package.
+- [FFmpeg](https://ffmpeg.org/) — decodes the captured audio. An unmodified GPLv3 build ([gyan.dev](https://www.gyan.dev/ffmpeg/builds/)) is bundled in the Windows package; see `_internal\ffmpeg\ffmpeg-NOTICE.txt`.
 
 Live Subtitle is released under the [GNU General Public License v3.0](LICENSE). Other bundled third-party components keep their own licences.
