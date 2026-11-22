@@ -65,6 +65,20 @@ def read_app_version(path: Path = MANIFEST_PATH) -> str:
     return str(version) if parse_version(version) else ""
 
 
+APP_ASSET = "Live-Subtitle-windows-x64.zip"
+_DOWNLOAD_PATH = f"/{REPO}/releases/download/"
+MAX_ASSET_BYTES = 4 * 1024**3
+
+
+@dataclass(frozen=True)
+class Asset:
+    """The Windows ZIP of a release, as far as it can be trusted: https://github.com link, size and SHA-256."""
+    name: str
+    url: str
+    size: int
+    sha256: str  # lowercase hex, from the "digest" GitHub computed for the upload
+
+
 @dataclass(frozen=True)
 class Release:
     version: str  # without the leading "v"
@@ -72,6 +86,7 @@ class Release:
     url: str  # always an https://github.com/ page
     notes: str
     published: str
+    asset: Asset | None = None  # None: no ZIP GitHub vouches for, so only the download page is offered
 
 
 @dataclass(frozen=True)
@@ -90,6 +105,23 @@ def _github_page(url: object) -> str:
     return url if parts and parts.scheme == "https" and parts.netloc == "github.com" else RELEASES_PAGE
 
 
+def _app_asset(payload: dict) -> Asset | None:
+    assets = payload.get("assets")
+    for item in assets if isinstance(assets, list) else ():
+        if not isinstance(item, dict) or item.get("name") != APP_ASSET:
+            continue
+        url, size, digest = item.get("browser_download_url"), item.get("size"), item.get("digest")
+        parts = urlsplit(url) if isinstance(url, str) else None
+        sha = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", digest) if isinstance(digest, str) else None
+        if not (parts and parts.scheme == "https" and parts.netloc == "github.com"
+                and parts.path.startswith(_DOWNLOAD_PATH) and parts.path.endswith("/" + APP_ASSET)
+                and sha and isinstance(size, int) and not isinstance(size, bool)
+                and 0 < size <= MAX_ASSET_BYTES):
+            return None
+        return Asset(APP_ASSET, url, size, sha.group(1).lower())
+    return None
+
+
 def parse_release(payload: object) -> Release | None:
     """The GitHub "latest release" JSON as a ``Release``; ``None`` for a draft, a pre-release or bad data."""
     if not isinstance(payload, dict) or payload.get("draft") or payload.get("prerelease"):
@@ -103,7 +135,7 @@ def parse_release(payload: object) -> Release | None:
         notes = notes[:MAX_NOTES].rstrip() + "\n…"
     published = payload.get("published_at")
     return Release(tag.strip().lstrip("vV"), tag.strip(), _github_page(payload.get("html_url")), notes,
-                   published if isinstance(published, str) else "")
+                   published if isinstance(published, str) else "", _app_asset(payload))
 
 
 def fetch_latest_release(url: str = RELEASES_API, timeout: float = TIMEOUT) -> Release:

@@ -71,6 +71,37 @@ def test_missing_or_oversized_notes_are_tolerated():
     assert len(uc.parse_release(_payload(body="x" * 50_000)).notes) <= uc.MAX_NOTES + 2
 
 
+GOOD_URL = "https://github.com/xu-0306/live-subtitle/releases/download/v0.5.0/Live-Subtitle-windows-x64.zip"
+SHA = "ED3260F5" + "ab" * 28
+
+
+def _asset(**overrides):
+    asset = {"name": uc.APP_ASSET, "browser_download_url": GOOD_URL, "size": 437_749_925, "digest": f"sha256:{SHA}"}
+    asset.update(overrides)
+    return asset
+
+
+def test_the_windows_zip_is_found_with_its_size_and_lowercase_hash():
+    release = uc.parse_release(_payload(assets=[
+        {"name": "Live-Subtitle-chrome-extension-v0.5.0.zip", "browser_download_url": "https://github.com/x"},
+        _asset()]))
+    assert release.asset == uc.Asset(uc.APP_ASSET, GOOD_URL, 437_749_925, SHA.lower())
+
+
+@pytest.mark.parametrize("assets", [
+    None, [], "x", [None], [{"name": "other.zip"}],
+    [_asset(browser_download_url="http://github.com/xu-0306/live-subtitle/releases/download/v0.5.0/Live-Subtitle-windows-x64.zip")],
+    [_asset(browser_download_url="https://evil.example/xu-0306/live-subtitle/releases/download/v0.5.0/Live-Subtitle-windows-x64.zip")],
+    [_asset(browser_download_url="https://github.com/someone-else/live-subtitle/releases/download/v0.5.0/Live-Subtitle-windows-x64.zip")],
+    [_asset(browser_download_url="https://github.com/xu-0306/live-subtitle/releases/download/v0.5.0/other.zip")],
+    [_asset(digest=None)], [_asset(digest="sha256:abc")], [_asset(digest="md5:" + "a" * 32)],
+    [_asset(size=0)], [_asset(size=-5)], [_asset(size=True)], [_asset(size="5")], [_asset(size=uc.MAX_ASSET_BYTES + 1)],
+])
+def test_a_zip_that_cannot_be_verified_is_never_offered_for_installation(assets):
+    release = uc.parse_release(_payload(assets=assets))
+    assert release is not None and release.asset is None  # the release itself still counts: notify-only
+
+
 def test_check_new_current_and_older_than_this_build():
     def reply(version):
         return lambda: uc.parse_release(_payload(tag_name=f"v{version}"))

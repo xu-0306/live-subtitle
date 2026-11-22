@@ -1,13 +1,15 @@
 """Update check in the desktop window: prompts only for a new version, stays quiet otherwise, survives offline."""
+import dataclasses
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 from qfluentwidgets import InfoBar
 
-from gui import config_manager, update_check, update_dialog
+from gui import config_manager, self_update, update_check, update_dialog
 from gui.app import MainWindow
 
 RELEASE = update_check.Release(
@@ -262,3 +264,158 @@ def test_a_release_without_notes_still_gets_a_dialog(window):
     bare = update_check.Release("99.0.0", "v99.0.0", update_check.RELEASES_PAGE, "", "")
     dialog = update_dialog.UpdateDialog(window, bare, "")
     assert not hasattr(dialog, "notes") and "unknown version" in dialog.viewLayout.itemAt(1).widget().text()
+
+
+# --- one-click update: "Update now", the restart prompt and the helper hand-over ---
+
+ASSET = update_check.Asset(
+    "Live-Subtitle-windows-x64.zip",
+    "https://github.com/xu-0306/live-subtitle/releases/download/v99.0.0/Live-Subtitle-windows-x64.zip",
+    450 * 2**20, "a" * 64)
+PACKAGED_RELEASE = dataclasses.replace(RELEASE, asset=ASSET)
+
+
+def test_the_dialog_offers_update_now_only_for_a_packaged_install_with_a_verified_zip(window, tmp_path, monkeypatch):
+    monkeypatch.setattr(self_update, "install_dir", lambda: tmp_path)
+    dialog = update_dialog.UpdateDialog(window, PACKAGED_RELEASE, "0.5.1")
+    assert list(dialog.buttons) == ["Update now", "Open download page", "Skip this version", "Later"]
+    assert any("450 MB" in label.text() for label in dialog.findChildren(QtWidgets.QLabel))
+    dialog.buttons["Update now"].click()
+    assert dialog.choice == "update"
+    assert "Update now" not in update_dialog.UpdateDialog(window, RELEASE, "0.5.1").buttons  # no verified ZIP
+    monkeypatch.setattr(self_update, "install_dir", lambda: None)  # a source checkout
+    assert "Update now" not in update_dialog.UpdateDialog(window, PACKAGED_RELEASE, "0.5.1").buttons
+
+
+@pytest.fixture
+def packaged(window, tmp_path, monkeypatch):
+    """A window that believes it is a packaged install; download, helper and prompt are recorded, not run."""
+    install = tmp_path / "apps" / "Live Subtitle"
+    install.mkdir(parents=True)
+    window._self_update_install, window._updates_dir = install, tmp_path / "updates"
+    monkeypatch.delenv(self_update.OK_ENV, raising=False)
+    calls = SimpleNamespace(install=install, stage=[], apply=[], restart=True, apply_result=(True, ""), reason="")
+
+    def fake_stage(release, inst, updates, cancel, progress, **kwargs):
+        progress("download", 10 * 2**20, 100 * 2**20)
+        progress("unpack", 100 * 2**20, 100 * 2**20)
+        calls.stage.append((release.version, inst))
+
+    def fake_apply(inst, updates, version, **kwargs):
+        calls.apply.append((inst, version))
+        return calls.apply_result
+
+    monkeypatch.setattr(self_update, "can_apply", lambda inst: calls.reason)
+    monkeypatch.setattr(self_update, "download_and_stage", fake_stage)
+    monkeypatch.setattr(self_update, "apply", fake_apply)
+    monkeypatch.setattr(update_dialog, "show_restart_dialog", lambda parent, version: calls.restart)
+    return calls
+
+
+def test_update_now_downloads_asks_to_restart_and_hands_over_to_the_helper_on_close(window, packaged, dialogs):
+    dialogs.answer = "update"
+    window._show_update_dialog(PACKAGED_RELEASE)
+    assert _wait_until(lambda: packaged.apply), "the helper was never started"
+    assert packaged.stage == [("99.0.0", packaged.install)]
+    assert packaged.apply == [(packaged.install, "99.0.0")]
+    assert window._update_download_running is False and window._update_progress_bar is None
+
+
+def test_progress_text_follows_the_phase(window):
+    bar = InfoBar.info("Updating Live Subtitle", "Downloading… 0%", parent=window, duration=-1)
+    window._update_progress_bar = bar
+    window._on_update_progress("download", 50 * 2**20, 100 * 2**20)
+    assert bar.contentLabel.text() == "Downloading… 50% (50 of 100 MB)"
+    window._on_update_progress("verify", 0, 0)
+    assert "Checking" in bar.contentLabel.text()
+    window._on_update_progress("unpack", 100 * 2**20, 100 * 2**20)
+    assert bar.contentLabel.text().startswith("Unpacking… 100%")
+
+
+def test_later_keeps_the_update_and_a_bar_restarts_it(window, packaged):
+    packaged.restart = False
+    window._on_update_staged("99.0.0", "")
+    assert packaged.apply == []
+    (bar,) = window.findChildren(InfoBar)
+    assert bar.titleLabel.text() == "Update ready" and "99.0.0" in bar.contentLabel.text()
+    next(b for b in bar.findChildren(QtWidgets.QPushButton) if b.text() == "Restart now").click()
+    assert packaged.apply == [(packaged.install, "99.0.0")]
+
+
+def test_a_failed_or_cancelled_download_says_so_and_never_asks_to_restart(window, packaged):
+    window._on_update_staged("99.0.0", "cancelled")
+    window._on_update_staged("99.0.0", "Not enough free disk space to unpack the update.")
+    assert window.notices == [
+        ("Update cancelled.", "info"),
+        ("The update could not be installed: Not enough free disk space to unpack the update.", "warning")]
+    assert window.findChildren(InfoBar) == [] and packaged.apply == []
+
+
+def test_a_helper_that_cannot_start_keeps_the_app_open(window, packaged):
+    packaged.apply_result = (False, "The updater did not start in time, so nothing was changed.")
+    window._restart_to_update("99.0.0")
+    assert window._apply_update_version == ""
+    assert window.notices == [
+        ("The update was not applied: The updater did not start in time, so nothing was changed.", "warning")]
+
+
+def test_backing_out_of_unsaved_changes_cancels_the_restart(window, packaged, monkeypatch):
+    monkeypatch.setattr(window, "_resolve_unsaved_changes", lambda: False)
+    window._restart_to_update("99.0.0")
+    assert packaged.apply == [] and window._apply_update_version == ""
+
+
+def test_a_folder_that_cannot_be_replaced_falls_back_to_the_download_page(window, packaged, opened):
+    packaged.reason = "C:/Program Files is not writable, so the app cannot replace itself there."
+    window._start_self_update(PACKAGED_RELEASE)
+    assert opened == [PACKAGED_RELEASE.url]
+    assert packaged.stage == [] and window._update_download_running is False
+    assert "not writable" in window.notices[-1][0] and window.notices[-1][1] == "warning"
+
+
+def test_a_source_checkout_never_starts_a_self_update(window, opened):
+    assert window._self_update_install is None
+    window._start_self_update(PACKAGED_RELEASE)
+    assert opened == [] and window.notices == []
+
+
+def _staged(install, version):
+    new = install.with_name(install.name + ".new")
+    new.mkdir()
+    (new / self_update.READY).write_text(version)
+    return new
+
+
+def test_start_reminds_of_a_waiting_update(window, packaged):
+    _staged(packaged.install, "99.0.0")
+    window._update_housekeeping()
+    (bar,) = window.findChildren(InfoBar)
+    assert bar.titleLabel.text() == "Update ready"
+
+
+def test_start_reports_how_the_last_update_went(window, packaged):
+    updates = window._updates_dir
+    updates.mkdir()
+    (updates / self_update.RESULT).write_text(json.dumps({"status": "ok", "version": "1.2.3"}))
+    window._update_housekeeping()
+    assert window.notices == [("Live Subtitle was updated to version 1.2.3.", "info")]
+    (updates / self_update.RESULT).write_text(json.dumps(
+        {"status": "rolled_back", "version": "1.2.4", "detail": "The new version did not start."}))
+    window._update_housekeeping()
+    message, kind = window.notices[-1]
+    assert kind == "warning" and "1.2.4" in message and "did not start" in message
+    assert not (updates / self_update.RESULT).exists(), "a verdict is shown once"
+
+
+def test_start_removes_what_an_update_left_behind_but_not_while_the_helper_is_running(window, packaged, monkeypatch):
+    install = packaged.install
+    for suffix in (".old", ".failed"):
+        install.with_name(install.name + suffix).mkdir()
+    window._update_housekeeping()
+    assert _wait_until(lambda: not any(install.with_name(install.name + s).exists() for s in (".old", ".failed")))
+    leftover = install.with_name(install.name + ".old")
+    leftover.mkdir()
+    monkeypatch.setenv(self_update.OK_ENV, "x")  # started by the helper, which deletes .old itself
+    window._update_housekeeping()
+    QtTest.QTest.qWait(200)
+    assert leftover.exists()

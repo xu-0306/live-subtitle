@@ -20,7 +20,7 @@ from qfluentwidgets import (
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from gui import config_manager, fluent_kit, update_check, update_dialog
+from gui import config_manager, fluent_kit, self_update, update_check, update_dialog
 from gui.backend_runner import BackendRunner
 from gui.download_worker import ModelDownloadWorker
 from gui.local_model_controller import LocalModelController
@@ -233,6 +233,15 @@ class MainWindow(FluentWindow):
         self._update_check_running = False
         self._update_bridge = update_dialog.UpdateBridge(self)
         self._update_bridge.done.connect(self._on_update_result)
+        # One-click update (gui/self_update.py): only a packaged install has a folder to replace.
+        self._self_update_install = self_update.install_dir()
+        self._updates_dir = self.config_path.with_name("updates")
+        self._update_download_running = False
+        self._update_cancel = threading.Event()
+        self._update_progress_bar = None
+        self._apply_update_version = ""  # set by "Restart now"; closeEvent starts the helper once it may quit
+        self._update_bridge.progress.connect(self._on_update_progress)
+        self._update_bridge.staged.connect(self._on_update_staged)
         self._update_check_at_start = (
             bool(check_updates)
             if check_updates is not None
@@ -272,6 +281,10 @@ class MainWindow(FluentWindow):
         if self._update_check_at_start and update_check.is_due(self._update_state):
             # Well after the window (and any first-run dialog) is up; offline, it ends quietly.
             QtCore.QTimer.singleShot(5000, self._start_update_check)
+        # Started by the update helper: say so, so it keeps this version (it rolls back when it hears nothing).
+        QtCore.QTimer.singleShot(3000, self_update.confirm_started)
+        if self._self_update_install is not None:
+            QtCore.QTimer.singleShot(4000, self._update_housekeeping)
 
     @staticmethod
     def _ensure_ui_font() -> str:
@@ -883,7 +896,7 @@ class MainWindow(FluentWindow):
         if hasattr(self, "server_status_detail") and kind == "error":
             self.server_status_detail.setText(message)
 
-    # --- update check (gui/update_check.py): find out and tell, never download or install anything ---
+    # --- update check (gui/update_check.py) finds out and tells; "Update now" (gui/self_update.py) installs ---
 
     def _check_updates_clicked(self, _checked: bool = False) -> None:
         self._start_update_check(manual=True)
@@ -941,10 +954,112 @@ class MainWindow(FluentWindow):
         choice = update_dialog.show_update_dialog(self, release, self._app_version)
         if choice == "open":
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(release.url))
+        elif choice == "update":
+            self._start_self_update(release)
         elif choice == "skip":
             self._update_state["skipped"] = release.version
             update_check.save_state(self._update_state_path, self._update_state)
             self._show_notice(f"Version {release.version} skipped. Check for updates to see it again.")
+
+    def _start_self_update(self, release: "update_check.Release") -> None:
+        install = self._self_update_install
+        if install is None or self._update_download_running:
+            return
+        reason = self_update.can_apply(install)
+        if reason:
+            self._show_notice(f"{reason} The download page is opened instead.", "warning")
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(release.url))
+            return
+        self._update_download_running = True
+        self._update_cancel = cancel = threading.Event()
+        bar = InfoBar.info("Updating Live Subtitle", "Downloading… 0%", parent=self, duration=-1)
+        cancel_button = PushButton("Cancel")
+        cancel_button.clicked.connect(cancel.set)
+        bar.addWidget(cancel_button)
+        self._update_progress_bar = bar
+        bridge, updates = self._update_bridge, self._updates_dir
+
+        def work() -> None:
+            last = [None]
+
+            def progress(phase: str, done: int, total: int) -> None:
+                step = (phase, done * 100 // total if total else -1)  # a signal per percent, not per chunk
+                if step != last[0]:
+                    last[0] = step
+                    try:
+                        bridge.progress.emit(phase, done, total)
+                    except RuntimeError:  # the window was closed in the meantime
+                        pass
+
+            try:
+                self_update.download_and_stage(release, install, updates, cancel, progress)
+                error = ""
+            except self_update.Cancelled:
+                error = "cancelled"
+            except Exception as exc:  # shown to the user; the app keeps running
+                error = str(exc) or type(exc).__name__
+            try:
+                bridge.staged.emit(release.version, error)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, name="self-update", daemon=True).start()
+
+    def _on_update_progress(self, phase: str, done: int, total: int) -> None:
+        bar = self._update_progress_bar
+        if bar is None:
+            return
+        if phase == "verify":
+            text = "Checking the download…"
+        else:
+            verb = "Downloading" if phase == "download" else "Unpacking"
+            text = f"{verb}… {done * 100 // total if total else 0}% ({done // 2**20} of {total // 2**20} MB)"
+        bar.contentLabel.setText(text)
+
+    def _on_update_staged(self, version: str, error: str) -> None:
+        self._update_download_running = False
+        bar, self._update_progress_bar = self._update_progress_bar, None
+        if bar is not None:
+            bar.close()
+        if error == "cancelled":
+            self._show_notice("Update cancelled.")
+        elif error:
+            self._show_notice(f"The update could not be installed: {error}", "warning")
+        elif update_dialog.show_restart_dialog(self, version):
+            self._restart_to_update(version)
+        else:
+            self._show_restart_bar(version)
+
+    def _show_restart_bar(self, version: str) -> None:
+        bar = InfoBar.success(
+            "Update ready", f"Version {version} is downloaded. Restart Live Subtitle to apply the update.",
+            parent=self, duration=-1)
+        button = PushButton("Restart now")
+        button.clicked.connect(lambda: (bar.close(), self._restart_to_update(version)))
+        bar.addWidget(button)
+
+    def _restart_to_update(self, version: str) -> None:
+        # The window closes through the usual closeEvent (unsaved changes, backend shutdown); the helper is
+        # started there, last, so a cancelled close never leaves a helper waiting to kill a running app.
+        self._apply_update_version = version
+        self.close()
+
+    def _update_housekeeping(self) -> None:
+        """A few seconds after start: report how the last update went, tidy up, remind of a waiting update."""
+        install = self._self_update_install
+        verdict = self_update.take_result(self._updates_dir)
+        if verdict and verdict.get("status") == "ok":
+            self._show_notice(f"Live Subtitle was updated to version {verdict.get('version', '')}.")
+        elif verdict:
+            self._show_notice(
+                f"The update to {verdict.get('version', '')} was not applied: {verdict.get('detail', '')} "
+                "The previous version is running.", "warning")
+        if not os.environ.get(self_update.OK_ENV):  # the helper itself deletes the old folder after an update
+            threading.Thread(target=self_update.cleanup, args=(install, self._app_version),
+                             name="update-cleanup", daemon=True).start()
+        version = self_update.pending(install, self._app_version)
+        if version:
+            self._show_restart_bar(version)
 
     def _run_first_start_setup_assistant(self) -> None:
         applied = self._run_setup_assistant(first_run=True)
@@ -1191,6 +1306,7 @@ class MainWindow(FluentWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         if not self._resolve_unsaved_changes():
+            self._apply_update_version = ""  # the user backed out of "Restart now"
             event.ignore()
             return
         if self._service_test_socket is not None:
@@ -1205,6 +1321,14 @@ class MainWindow(FluentWindow):
             event.ignore()
             QtCore.QTimer.singleShot(500, self.close)
             return
+        if self._apply_update_version and self._self_update_install is not None:
+            started, message = self_update.apply(
+                self._self_update_install, self._updates_dir, self._apply_update_version)
+            if not started:  # nothing changed; stay open instead of leaving the user without an app
+                self._apply_update_version = ""
+                self._show_notice(f"The update was not applied: {message}", "warning")
+                event.ignore()
+                return
         event.accept()
         QtWidgets.QApplication.quit()
 
