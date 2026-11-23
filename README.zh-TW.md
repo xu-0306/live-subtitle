@@ -37,7 +37,7 @@ Live Subtitle 擷取 Chrome／Edge 分頁的音訊，在本機以 Whisper 轉成
 
 ## 快速開始
 
-需求：64 位元 Windows，以及 Chrome、Edge 等 Chromium 瀏覽器。建議使用 NVIDIA 顯示卡，但非必要。
+需求：64 位元 Windows，以及 Chrome、Edge 等 Chromium 瀏覽器。建議使用 NVIDIA 顯示卡，但非必要；AMD 與 Intel 顯示卡可以執行本機翻譯。
 
 1. **下載**：到[最新版本](https://github.com/xu-0306/live-subtitle/releases/latest)下載 `Live-Subtitle-windows-x64.zip` 和 `Live-Subtitle-chrome-extension-v<版本>.zip` 兩個檔案。
 2. **開啟桌面程式**：解壓縮 Windows 套件，執行 `live-subtitle.exe`。首次啟動時會讀取顯示卡記憶體，推薦語音模型與翻譯設定。
@@ -77,6 +77,9 @@ python -m pip install -r gui\requirements.txt
 - **任何分頁皆可使用**：影音網站、直播、網頁會議皆可，並可同時擷取多個分頁。
 - **選用翻譯**：只顯示原文、使用本機 GGUF 模型，或連接 Ollama、OpenAI 相容 API 等翻譯服務。
 - **模型推薦**：首次啟動時讀取顯示卡記憶體，推薦低延遲、日常或高品質組合；沒有支援的顯示卡時推薦較小的模型。
+- **GPU 語音套件**：使用 NVIDIA 顯示卡時，可在 **Speech recognition → GPU speech pack** 下載一次 CUDA 支援（約 2.9 GB，存放在程式資料夾外，更新後仍保留），讓語音辨識改用 GPU 執行。
+- **速度測試**：**Settings → Test speed** 會用合成語音同時測試語音辨識與本機翻譯，告訴你這個組合在你的電腦上跟不跟得上。**Local translation** 頁面會顯示模型實際在 GPU 還是 CPU 上執行，並可在 **Advanced** 調整 CPU 設定。
+- **AMD 與 Intel 顯示卡**：本機翻譯可透過 llama.cpp 官方的 Vulkan 版本在 AMD 與 Intel 顯示卡上執行（首次使用下載一次，約 32 MB）。這些顯示卡上的語音辨識仍在 CPU 上執行。
 - **字幕可調整**：位置、大小、字體大小、透明度、歷史行數，以及是否顯示辨識中的文字。
 - **按需載入模型**：開始擷取才載入模型，最後一個分頁停止後釋放本機翻譯模型。
 
@@ -108,7 +111,7 @@ python -m pip install -r gui\requirements.txt
 | **Speech recognition** | 選擇 Whisper 語音辨識模型。 |
 | **Tuning** | 調整字幕與串流行為。 |
 | **Translation services** | 儲存並測試 Ollama、OpenAI 相容 API、vLLM 等服務的連線。 |
-| **Settings** | 主題、設定與模型存放位置、模型推薦，以及程式版本與更新檢查。 |
+| **Settings** | 主題、設定與模型存放位置、模型推薦、要保持更新的 Chrome 擴充功能資料夾，以及程式版本與更新檢查。 |
 
 ## 運作方式
 
@@ -152,7 +155,7 @@ flowchart LR
 
 發佈套件不含模型。語音模型在首次使用時下載，也可從 GUI 預先下載；本機翻譯模型從 **Local translation** 頁下載。
 
-首次啟動時，設定助手透過 `nvidia-smi` 讀取 NVIDIA 顯示卡的總記憶體與可用記憶體，合併計算 Whisper 與本機翻譯的需求，推薦低延遲、日常或高品質組合。低於 8 GB 或沒有支援的 NVIDIA 顯示卡時，建議較小的 Whisper 搭配 CPU 翻譯，並說明外部翻譯服務的選項。可從 **Settings → Recommend model setup** 重新偵測。
+首次啟動時，設定助手讀取顯示卡的總記憶體與可用記憶體（NVIDIA 透過 `nvidia-smi`，AMD 與 Intel 透過 Windows），合併計算 Whisper 與本機翻譯的需求，推薦低延遲、日常或高品質組合。AMD 或 Intel 顯示卡有至少 4 GB 時，只把翻譯放在顯示卡上，Whisper Base 在 CPU 上執行。NVIDIA 低於 8 GB 或沒有支援的顯示卡時，建議較小的 Whisper 搭配 CPU 翻譯，並說明外部翻譯服務的選項。可從 **Settings → Recommend model setup** 重新偵測。
 
 套用推薦只會儲存選擇，不會自動下載大型檔案；請在 **Speech recognition** 與 **Local translation** 確認大小後下載。推薦的本機翻譯模型需下載並通過雜湊檢查後才會成為預設。
 
@@ -177,7 +180,7 @@ Windows 預設資料結構：
 
 兩邊都會通知你有新版，並附上發行說明。封裝版 Windows 桌面程式的提示有 **Update now** 按鈕：它會從該版本下載 Windows ZIP，用 GitHub 記錄的大小與 SHA-256 檢查，解壓縮到程式資料夾旁邊，然後請你重新啟動。重新啟動時會關閉程式、把兩個資料夾對調並開啟新版；如果新版沒有正常啟動，會自動換回原本的版本。`%APPDATA%\Live Subtitle` 內的設定與模型會保留。程式資料夾必須放在你有寫入權限的位置（不能是 `C:\Program Files`）；否則，或有其他程式占用該資料夾時，程式會維持原狀，提示改為開啟下載頁。如果你的更新提示沒有 **Update now** 按鈕，代表你的版本還沒有這個功能：請手動下載目前的 ZIP 並解壓縮一次，之後就能在程式內更新。
 
-未封裝的擴充功能無法自行更新：到[最新版本](https://github.com/xu-0306/live-subtitle/releases/latest)下載擴充功能 ZIP，把載入擴充功能的資料夾內檔案換成新版，並在 `chrome://extensions` 按下 **重新載入**。
+未封裝的擴充功能無法自行更新，但桌面程式可以代勞。在 **Settings → Chrome extension** 選一次你在 Chrome 載入擴充功能的資料夾，之後較新的程式啟動時（或你按下 **Update extension now** 時）會把內附的擴充功能檔案複製到該資料夾，擴充功能約五分鐘內會自行重新載入，而且不會在擷取進行到一半時重新載入。程式只會寫入已經放著這個擴充功能的資料夾，最後才寫入 `manifest.json`，也不會刪除任何檔案。這要在你載入的擴充功能本身已有這個功能時才有效；如果沒有（它來自較舊的 ZIP），請到[最新版本](https://github.com/xu-0306/live-subtitle/releases/latest)下載擴充功能 ZIP，把該資料夾內檔案換成新版，並在 `chrome://extensions` 按一次 **重新載入**。沒有桌面程式的話，只能手動替換並重新載入。
 
 版本號只記在一個地方：`chrome-extension/manifest.json`。發行標籤是 `v` 加上這個號碼，桌面程式讀的也是同一個檔案。
 
@@ -189,7 +192,7 @@ Windows 預設資料結構：
 | `offscreen` | 在 offscreen 文件中處理擷取到的音訊。 |
 | `scripting` | 在網頁上顯示字幕框。 |
 | `storage` | 保存你的設定。 |
-| `alarms` | 約每天喚醒一次背景 service worker，進行更新檢查；不會增加安裝時的警告。 |
+| `alarms` | 約每天喚醒一次背景 service worker，進行更新檢查；並每五分鐘讀一次自己的 `manifest.json`，看桌面程式是否已把較新的擴充功能檔案放進它的資料夾（不會傳送任何資料）。不會增加安裝時的警告。 |
 | 主機存取（`<all_urls>`） | 在任何網頁顯示字幕，並連到本機伺服器與你選的翻譯服務。更新檢查沿用這項權限，沒有新增任何主機權限。 |
 
 ### 設定的優先順序

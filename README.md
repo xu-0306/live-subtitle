@@ -37,7 +37,7 @@ Live Subtitle captures the audio of a Chrome or Edge tab, turns the speech into 
 
 ## Quick start
 
-Requirements: 64-bit Windows and a Chromium-based browser (Chrome, Edge). An NVIDIA GPU is recommended but not required.
+Requirements: 64-bit Windows and a Chromium-based browser (Chrome, Edge). An NVIDIA GPU is recommended but not required; AMD and Intel GPUs can run local translation.
 
 1. **Download** both files from the [latest release](https://github.com/xu-0306/live-subtitle/releases/latest): `Live-Subtitle-windows-x64.zip` and `Live-Subtitle-chrome-extension-v<version>.zip`.
 2. **Start the desktop app.** Unzip the Windows package and run `live-subtitle.exe`. On first launch it reads the GPU's memory and recommends a speech recognition model and translation setup.
@@ -77,6 +77,9 @@ Install PyTorch for your environment, then start the desktop app:
 - **Works on any tab:** video sites, livestreams and web meetings. Several tabs can be captured at the same time.
 - **Optional translation:** original text only, a local GGUF model, or a configured service such as Ollama or an OpenAI-compatible API.
 - **Model recommendation:** on first launch the app reads GPU memory and suggests a low-latency, everyday or quality combination; without a supported GPU it suggests a smaller model.
+- **GPU speech pack:** on an NVIDIA GPU, **Speech recognition → GPU speech pack** downloads CUDA support once (about 2.9 GB, kept outside the app folder so updates keep it) and runs speech recognition on the GPU.
+- **Speed test:** **Settings → Test speed** runs speech recognition and local translation together on generated speech and tells you whether the pair keeps up on your PC. The **Local translation** page shows whether the model actually runs on the GPU or the CPU and has CPU settings under **Advanced**.
+- **AMD and Intel GPUs:** local translation runs on AMD and Intel graphics cards through the official llama.cpp Vulkan build (downloaded once, about 32 MB). Speech recognition stays on the CPU on these cards.
 - **Adjustable subtitles:** position, size, text size, opacity, number of history lines, and whether partial results are shown.
 - **Models load on demand:** nothing is loaded until a tab starts capturing, and the local translation model is released when the last tab stops.
 
@@ -108,7 +111,7 @@ Install PyTorch for your environment, then start the desktop app:
 | **Speech recognition** | Choose the Whisper speech-recognition model. |
 | **Tuning** | Adjust subtitle and streaming behaviour. |
 | **Translation services** | Save and test connections to Ollama, OpenAI-compatible APIs, vLLM and similar services. |
-| **Settings** | Theme, where settings and models are stored, the model recommendation, and the app version with its update check. |
+| **Settings** | Theme, where settings and models are stored, the model recommendation, the Chrome extension folder to keep up to date, and the app version with its update check. |
 
 ## How it works
 
@@ -152,7 +155,7 @@ Tab audio is sent only to the local server. If a translation service is selected
 
 Models are not included in the release packages. Speech recognition models download the first time they are needed; local translation models are downloaded from the **Local translation** page.
 
-On first launch, a setup assistant reads total and free NVIDIA video memory through `nvidia-smi`, budgets Whisper and local translation together, and recommends a low-latency, everyday or quality pair. Below 8 GiB, or without a supported NVIDIA GPU, it recommends a smaller Whisper model with CPU translation and explains the external-service option. Run it again under **Settings → Recommend model setup**.
+On first launch, a setup assistant reads total and free video memory (`nvidia-smi` for NVIDIA, Windows for AMD and Intel), budgets Whisper and local translation together, and recommends a low-latency, everyday or quality pair. On an AMD or Intel GPU with at least 4 GiB it puts only translation on the GPU and keeps Whisper Base on the CPU. Below 8 GiB on NVIDIA, or without a supported GPU, it recommends a smaller Whisper model with CPU translation and explains the external-service option. Run it again under **Settings → Recommend model setup**.
 
 Applying a recommendation saves the choices but does not start large downloads. Start them from **Speech recognition** and **Local translation**. A recommended local translation model becomes the default only after its download and hash check finish.
 
@@ -177,7 +180,7 @@ If you start the backend directly instead of through the desktop app, the extens
 
 Both parts tell you that a new version exists, with the release notes. In the packaged Windows app the prompt has an **Update now** button: it downloads the Windows ZIP from the release, checks its size and SHA-256 against the values GitHub recorded for that upload, unpacks it next to the app folder and asks you to restart. The restart closes the app, swaps the two folders and opens the new version; if the new version does not come up, the previous one is put back. Settings and models in `%APPDATA%\Live Subtitle` are kept. The app folder must sit in a place you may write to (not `C:\Program Files`); otherwise, or when a program holds the folder open, the app leaves everything as it was and the prompt falls back to the download page. If your update prompt has no **Update now** button, your copy predates this feature: download the current ZIP and unpack it by hand once, and later updates can be applied from inside the app.
 
-An unpacked extension cannot update itself: take the extension ZIP from the [latest release](https://github.com/xu-0306/live-subtitle/releases/latest), replace the files in the folder you loaded and press **Reload** on `chrome://extensions`.
+An unpacked extension cannot update itself, but the app can do it for you. Under **Settings → Chrome extension** choose, once, the folder you loaded in Chrome. A newer app then copies its bundled extension files into that folder when it starts (or when you press **Update extension now**), and the extension reloads itself within about five minutes, never in the middle of a capture. The app writes only to a folder that already holds this extension, writes `manifest.json` last and deletes nothing. This works once the extension you loaded contains the feature; if it does not (it came from an older ZIP), take the extension ZIP from the [latest release](https://github.com/xu-0306/live-subtitle/releases/latest), replace the files in that folder and press **Reload** on `chrome://extensions` one time. Without the app, that manual replace-and-reload is the only way.
 
 The version number lives in one place, `chrome-extension/manifest.json`. The release tag is `v` plus that number, and the app reads the same file.
 
@@ -189,7 +192,7 @@ The version number lives in one place, `chrome-extension/manifest.json`. The rel
 | `offscreen` | Process the captured audio in an offscreen document. |
 | `scripting` | Show the subtitle box on the page. |
 | `storage` | Keep your settings. |
-| `alarms` | Wake the background service worker about once a day for the update check. It adds no install warning. |
+| `alarms` | Wake the background service worker about once a day for the update check, and every five minutes to read its own `manifest.json` and see whether the desktop app has put newer extension files in its folder (nothing is sent anywhere). It adds no install warning. |
 | Host access (`<all_urls>`) | Show subtitles on any page and reach the local server and the translation service you choose. The update check reuses it; no new host permission was added. |
 
 ### Which setting wins

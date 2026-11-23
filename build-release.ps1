@@ -105,6 +105,18 @@ try {
         throw "Bundled ffmpeg.exe does not run: $bundledFfmpeg"
     }
 
+    # Settings > Chrome extension copies these files into the folder Chrome loaded: every one must be in the build.
+    $bundledExtension = Join-Path $appDir "_internal\chrome-extension"
+    $missingExtensionFiles = @(
+        Get-ChildItem -LiteralPath $extensionDir -Recurse -File |
+            ForEach-Object { $_.FullName.Substring($extensionDir.Length + 1) } |
+            Where-Object { $_ -notmatch '^tests\\' } |
+            Where-Object { -not (Test-Path -LiteralPath (Join-Path $bundledExtension $_) -PathType Leaf) }
+    )
+    if ($missingExtensionFiles.Count -gt 0) {
+        throw "Build completed without extension files: $($missingExtensionFiles -join ', ')"
+    }
+
     $collectToc = Join-Path $root "build\live-subtitle\COLLECT-00.toc"
     if (
         (Test-Path -LiteralPath $collectToc) -and

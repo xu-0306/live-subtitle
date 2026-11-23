@@ -201,7 +201,7 @@ def test_port_collision_does_not_adopt_or_stop_foreign_listener(tmp_path):
 
 
 def test_hardware_preflight_and_catalog():
-    with pytest.raises(RuntimeError, match='No supported NVIDIA GPU'):
+    with pytest.raises(RuntimeError, match='No supported GPU'):
         lr.preflight(MODELS[0], lr.Hardware('none', 0, 0), {}, {'model': 'medium'})
     assert 'CPU' in lr.preflight(MODELS[0], lr.Hardware('none', 0, 0), {'gpu_layers': 0}, {})
     automatic = lr.preflight(
@@ -255,4 +255,73 @@ def test_hardware_detection_chooses_largest_nvidia_gpu(monkeypatch):
         stderr='',
     )
     monkeypatch.setattr(lr.subprocess, 'run', lambda *args, **kwargs: result)
-    assert lr.detect_hardware() == lr.Hardware('Compute GPU', 24576, 18000)
+    assert lr.detect_hardware() == lr.Hardware('Compute GPU', 24576, 18000, 'nvidia')
+
+
+def test_without_nvidia_smi_the_largest_amd_or_intel_gpu_is_used(monkeypatch):
+    def no_nvidia_smi(*args, **kwargs):
+        raise FileNotFoundError('nvidia-smi')
+    monkeypatch.setattr(lr.subprocess, 'run', no_nvidia_smi)
+    adapters = [('Intel(R) UHD Graphics 770', 0x8086, 128, 'luid_0x00000000_0x00000001'),
+                ('AMD Radeon RX 7800 XT', 0x1002, 16368, 'luid_0x00000000_0x00000002'),
+                ('Intel(R) Arc(TM) A380', 0x8086, 6024, 'luid_0x00000000_0x00000003')]
+    monkeypatch.setattr(lr, '_dxgi_adapters', lambda: adapters)
+    paths = []
+    monkeypatch.setattr(lr, '_counter_mb', lambda path: paths.append(path) or 1200)
+    assert lr.detect_hardware() == lr.Hardware('AMD Radeon RX 7800 XT', 16368, 15168, 'amd')
+    assert paths == [r'\GPU Adapter Memory(luid_0x00000000_0x00000002_phys_*)\Dedicated Usage']
+    # A missing counter does not hide the GPU; llama.cpp --fit still checks the real budget.
+    monkeypatch.setattr(lr, '_counter_mb', lambda path: None)
+    assert lr.detect_hardware().free_mb == 16368
+    # Integrated GPUs alone, or a failing driver, leave CPU translation.
+    monkeypatch.setattr(lr, '_dxgi_adapters', lambda: adapters[:1])
+    assert lr.detect_hardware() == lr.Hardware('No supported GPU detected', 0, 0)
+    def broken():
+        raise OSError('dxgi')
+    monkeypatch.setattr(lr, '_dxgi_adapters', broken)
+    assert lr.detect_hardware().total_mb == 0
+
+
+def test_runtime_kind_and_memory_reserve_follow_the_gpu_vendor():
+    amd = lr.Hardware('AMD Radeon RX 7600', 8192, 7000, 'amd')
+    nvidia = lr.Hardware('RTX 3080', 10240, 9000, 'nvidia')
+    assert lr.runtime_kind(0, amd) == lr.runtime_kind(0, nvidia) == 'windows-cpu'
+    assert lr.runtime_kind(-1, amd) == lr.runtime_kind(5, lr.Hardware('Arc', 8192, 8000, 'intel')) == 'windows-vulkan'
+    assert lr.runtime_kind(-1, nvidia) == lr.runtime_kind(-1, lr.Hardware('x', 0, 0)) == 'windows-cuda'
+    assert all(len(a.sha256) == 64 and a.size > 0 for a in lr.RUNTIMES['windows-vulkan'])
+    # Whisper has no GPU path on AMD/Intel, so only the shared headroom is kept free there.
+    assert lr.auto_gpu_fit_target_mb({'model': 'large-v3'}, amd) == lr.SHARED_VRAM_HEADROOM_MB
+    assert lr.auto_gpu_fit_target_mb({'model': 'large-v3'}, nvidia) == 6524
+    small_amd = lr.Hardware('AMD Radeon RX 6500 XT', 4096, 2000, 'amd')
+    assert 'speech recognition runs on the CPU' in lr.preflight(MODELS[0], small_amd, {}, {'model': 'large-v3'})
+    with pytest.raises(RuntimeError, match='Whisper'):
+        lr.preflight(MODELS[0], lr.Hardware('GTX', 4096, 2000, 'nvidia'), {}, {'model': 'large-v3'})
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='DXGI is Windows-only')
+def test_dxgi_enumeration_runs_on_this_machine():
+    adapters = lr._dxgi_adapters()
+    assert all(name and total >= 0 and luid.startswith('luid_0x') for name, _vendor, total, luid in adapters)
+
+
+def test_vulkan_device_is_matched_by_gpu_name_and_pinned():
+    listing = ('Available devices:\n'
+               '  Vulkan0: Intel(R) UHD Graphics 770 (32626 MiB, 31858 MiB free)\n'
+               '  Vulkan1: NVIDIA GeForce RTX 3080 (10267 MiB, 9486 MiB free)\n')
+    run = lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=listing, stderr='')
+    assert lr.vulkan_device(Path('llama-server.exe'), 'NVIDIA GeForce RTX 3080', run) == 'Vulkan1'
+    assert lr.vulkan_device(Path('llama-server.exe'), 'AMD Radeon RX 7800 XT', run) is None
+    def missing(*a, **k):
+        raise FileNotFoundError('llama-server.exe')
+    assert lr.vulkan_device(Path('llama-server.exe'), 'x', missing) is None
+    assert lr.gpu_offload_args({'gpu_layers': 5, 'device': 'Vulkan1'})[:2] == ['--device', 'Vulkan1']
+    assert '--device' not in lr.gpu_offload_args({'gpu_layers': 0, 'device': 'Vulkan1'})
+    assert '--device' not in lr.gpu_offload_args({'gpu_layers': 5, 'device': None})
+    with pytest.raises(ValueError):
+        lr.gpu_offload_args({'gpu_layers': 5, 'device': 'Vulkan1 --rpc evil'})
+
+
+def test_vulkan_placement_uses_its_smaller_baseline():
+    # Measured on the RTX 3080: Auto offload of a 1222 MB model held 1295 MB through Vulkan.
+    assert lr.classify_placement(1295, 1222, lr.VULKAN_VRAM_BASELINE_MB)['state'] == 'gpu'
+    assert lr.classify_placement(1295, 1222)['state'] == 'partial'  # the CUDA baseline would misjudge it

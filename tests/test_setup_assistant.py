@@ -83,3 +83,21 @@ def test_installed_recommendation_can_become_default_immediately() -> None:
         "id": item.translation_model_id,
     }
     assert "pending_default_model_id" not in updated["local_llama"]
+
+
+def test_amd_gpu_holds_only_translation_and_whisper_runs_on_the_cpu():
+    item = _recommended(Hardware("AMD Radeon RX 7800 XT", 16384, 15000, "amd"))
+    assert item.stt_model == "base" and item.gpu_layers == -1
+    assert item.translation_model_id == "qwen25-7b-q4"
+    assert "CPU" in item.rationale and "Vulkan" in item.rationale
+    choices = recommendations_for_hardware(Hardware("AMD Radeon RX 7800 XT", 16384, 15000, "amd"))
+    assert choices[-1].translation_model_id is None
+    item = _recommended(Hardware("Intel Arc A380", 6144, 5800, "intel"))
+    assert item.translation_model_id == "qwen35-2b-q4" and item.gpu_layers == -1
+
+
+def test_small_or_busy_amd_gpu_falls_back_to_cpu_translation():
+    for hardware in (Hardware("AMD Radeon RX 6500 XT", 3072, 3000, "amd"),
+                     Hardware("AMD Radeon RX 7800 XT", 16384, 2000, "amd")):
+        item = _recommended(hardware)
+        assert item.gpu_layers == 0 and "NVIDIA" in item.rationale and "AMD" in item.rationale

@@ -20,10 +20,12 @@ from qfluentwidgets import (
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from gui import config_manager, fluent_kit, self_update, update_check, update_dialog
+from gui import config_manager, extension_sync, fluent_kit, self_update, update_check, update_dialog
 from gui.backend_runner import BackendRunner
 from gui.download_worker import ModelDownloadWorker
+from gui.gpu_pack_card import GpuPackCard
 from gui.local_model_controller import LocalModelController
+from gui._local_model_form import RUNTIME_DEFAULTS
 from gui.service_catalog_widget import ServiceCatalogWidget
 from gui.wheel_guard import protect_wheel_controls
 from gui.setup_assistant import (
@@ -32,7 +34,9 @@ from gui.setup_assistant import (
     apply_recommendation,
     mark_setup_assistant_seen,
     recommendations_for_hardware,
+    set_recommended_translation,
 )
+from gui.speed_test import SpeedTestDialog, last_test_date, speech_device_text
 from backend.local_runtime import detect_hardware
 from backend.model_manager import WHISPER_MODEL_URLS, model_filename
 
@@ -230,6 +234,10 @@ class MainWindow(FluentWindow):
         self._app_version = update_check.read_app_version()
         self._update_state_path = self.config_path.with_name("update-check.json")
         self._update_state = update_check.load_state(self._update_state_path)
+        # The folder the user loaded the Chrome extension from (gui/extension_sync.py keeps it up to date):
+        # {"folder", "auto"} in extension-sync.json beside the settings file; no folder means nothing is touched.
+        self._ext_state_path = self.config_path.with_name("extension-sync.json")
+        self._ext_state = update_check.load_state(self._ext_state_path)
         self._update_check_running = False
         self._update_bridge = update_dialog.UpdateBridge(self)
         self._update_bridge.done.connect(self._on_update_result)
@@ -278,6 +286,8 @@ class MainWindow(FluentWindow):
             QtCore.QTimer.singleShot(0, self._run_first_start_setup_assistant)
         elif self._auto_start_enabled:
             QtCore.QTimer.singleShot(0, self._auto_start_if_valid)
+        if not explicit_config and config_existed and setup_version < SETUP_ASSISTANT_VERSION:
+            QtCore.QTimer.singleShot(0, self._show_speed_test_notice)
         if self._update_check_at_start and update_check.is_due(self._update_state):
             # Well after the window (and any first-run dialog) is up; offline, it ends quietly.
             QtCore.QTimer.singleShot(5000, self._start_update_check)
@@ -285,6 +295,7 @@ class MainWindow(FluentWindow):
         QtCore.QTimer.singleShot(3000, self_update.confirm_started)
         if self._self_update_install is not None:
             QtCore.QTimer.singleShot(4000, self._update_housekeeping)
+        QtCore.QTimer.singleShot(4500, self._extension_housekeeping)
 
     @staticmethod
     def _ensure_ui_font() -> str:
@@ -317,7 +328,7 @@ class MainWindow(FluentWindow):
             self._persist_local_config,
             self,
         )
-        for key in ("model", "context", "gpu_layers", "port"):
+        for key in ("model", *RUNTIME_DEFAULTS):
             control = self.local_models.controls[key]
             signal = control.currentTextChanged if hasattr(control, "currentTextChanged") else control.valueChanged
             signal.connect(self._mark_dirty)
@@ -453,6 +464,9 @@ class MainWindow(FluentWindow):
         self.server_status_detail.setObjectName("mutedText")
         self.server_status_detail.setWordWrap(True)
         controls_layout.addWidget(self.server_status_detail)
+        self.speech_devices_status = fluent_kit.muted_label()
+        self.speech_devices_status.hide()
+        controls_layout.addWidget(self.speech_devices_status)
 
         error_row = QtWidgets.QHBoxLayout()
         self.error_toggle = PushButton()
@@ -528,6 +542,16 @@ class MainWindow(FluentWindow):
         form.addRow(BodyLabel("Recognition"), self.stt_partial_check)
         body.addWidget(model_group)
 
+        self.gpu_pack_card = GpuPackCard(
+            get_config=lambda: self.config,
+            save_config=lambda config: self._save_config_to_disk(updated=config, preserve_drafts=True),
+            get_runner=lambda: self.backend_runner,
+            stop_backend=self._stop_backend,
+            start_backend=self._start_backend,
+            notice=self._show_notice,
+        )
+        body.addWidget(self.gpu_pack_card)
+
         state_card = self._card("Availability")
         state_layout = state_card.layout()
         self.model_state_label = BodyLabel(
@@ -595,6 +619,9 @@ class MainWindow(FluentWindow):
             f"Example: 15 = 15 seconds. (Default {STALL_TIMEOUT_DEFAULT})")
         stability_group.setObjectName("card")
         body.addWidget(stability_group)
+        body.addWidget(fluent_kit.muted_label(
+            "Local translation model performance settings are on Local model > Advanced."
+        ))
         body.addStretch(1)
 
         for widget in (
@@ -713,16 +740,18 @@ class MainWindow(FluentWindow):
         self.restart_explainer.setWordWrap(True)
         behavior_layout.addWidget(self.restart_explainer)
         setup_row = QtWidgets.QHBoxLayout()
-        setup_explainer = BodyLabel(
-            "Detect NVIDIA VRAM again and choose a safe Whisper + local translation pair."
-        )
-        setup_explainer.setObjectName("mutedText")
-        setup_explainer.setWordWrap(True)
+        self.setup_explainer = BodyLabel()
+        self.setup_explainer.setObjectName("mutedText")
+        self.setup_explainer.setWordWrap(True)
+        self._refresh_speed_test_date()
         self.setup_assistant_btn = PushButton("Recommend model setup")
         self.setup_assistant_btn.setProperty("kind", "secondary")
         self.setup_assistant_btn.setAccessibleName("Recommend model setup")
-        setup_row.addWidget(setup_explainer, 1)
+        self.speed_test_btn = PushButton("Test speed")
+        self.speed_test_btn.setProperty("kind", "secondary")
+        setup_row.addWidget(self.setup_explainer, 1)
         setup_row.addWidget(self.setup_assistant_btn)
+        setup_row.addWidget(self.speed_test_btn)
         behavior_layout.addLayout(setup_row)
         layout.addWidget(behavior)
 
@@ -753,9 +782,46 @@ class MainWindow(FluentWindow):
 
         self.open_settings_folder_btn.clicked.connect(self._open_settings_folder)
         self.setup_assistant_btn.clicked.connect(self._run_setup_assistant)
+        self.speed_test_btn.clicked.connect(self._run_speed_test)
         self.model_cache_btn.clicked.connect(self._browse_model_dir)
         self.model_cache_input.textChanged.connect(self._mark_dirty)
         self.model_cache_input.editingFinished.connect(self._model_storage_changed)
+
+        extension = self._card("Chrome extension")
+        extension_layout = extension.layout()
+        extension_layout.addWidget(fluent_kit.muted_label(
+            "If you loaded the extension in Chrome from a folder (Load unpacked), choose that folder once. "
+            "A newer app then copies its extension files there and the extension reloads itself, so there is "
+            "nothing to download or reload.", small=True))
+        folder_row = QtWidgets.QHBoxLayout()
+        self.ext_folder_input = LineEdit()
+        self.ext_folder_input.setReadOnly(True)
+        self.ext_folder_input.setPlaceholderText("No folder chosen")
+        self.ext_folder_input.setAccessibleName("Chrome extension folder")
+        self.ext_folder_btn = PushButton("Choose folder…")
+        folder_row.addWidget(self.ext_folder_input, 1)
+        folder_row.addWidget(self.ext_folder_btn)
+        extension_layout.addLayout(folder_row)
+        self.ext_auto_check = CheckBox("Update the extension automatically when the app starts")
+        extension_layout.addWidget(self.ext_auto_check)
+        sync_row = QtWidgets.QHBoxLayout()
+        self.ext_sync_btn = PushButton("Update extension now")
+        self.ext_status = BodyLabel("")
+        self.ext_status.setObjectName("mutedText")
+        self.ext_status.setWordWrap(True)
+        sync_row.addWidget(self.ext_sync_btn)
+        sync_row.addWidget(self.ext_status, 1)
+        extension_layout.addLayout(sync_row)
+        extension_layout.addWidget(fluent_kit.muted_label(
+            "Only a folder that already holds this extension is written to, and nothing in it is deleted. "
+            "These settings apply at once; they are not part of Save all.", small=True))
+        self.ext_folder_input.setText(self._ext_state.get("folder") or "")
+        self.ext_auto_check.setChecked(self._ext_state.get("auto") is not False)
+        self._refresh_extension_status()
+        self.ext_folder_btn.clicked.connect(self._choose_extension_folder)
+        self.ext_sync_btn.clicked.connect(lambda _checked=False: self._sync_extension(manual=True))
+        self.ext_auto_check.toggled.connect(self._set_extension_auto)
+        layout.addWidget(extension)
 
         about = self._card("About")
         about_layout = about.layout()
@@ -896,6 +962,57 @@ class MainWindow(FluentWindow):
         if hasattr(self, "server_status_detail") and kind == "error":
             self.server_status_detail.setText(message)
 
+    # --- Chrome extension folder (gui/extension_sync.py): copies the bundled files over the folder Chrome loaded ---
+
+    def _save_extension_state(self) -> None:
+        if not update_check.save_state(self._ext_state_path, self._ext_state):
+            self._show_notice("Could not save the Chrome extension setting.", "warning")
+
+    def _refresh_extension_status(self) -> None:
+        folder = self._ext_state.get("folder") or ""
+        state, text = extension_sync.status(folder) if folder else ("", "Choose the folder you loaded in Chrome.")
+        self.ext_status.setText(text)
+        self.ext_sync_btn.setEnabled(state == "outdated")
+
+    def _choose_extension_folder(self, _checked: bool = False) -> None:
+        start = self._ext_state.get("folder") or str(Path.home())
+        path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select the folder Chrome loaded the extension from", start)
+        if not path:
+            return
+        why = extension_sync.problem(Path(path))
+        if why:
+            self._show_notice(why, "warning")
+            return
+        self._ext_state["folder"] = str(Path(path))
+        self.ext_folder_input.setText(self._ext_state["folder"])
+        self._save_extension_state()
+        self._refresh_extension_status()
+
+    def _set_extension_auto(self, enabled: bool) -> None:
+        self._ext_state["auto"] = bool(enabled)
+        self._save_extension_state()
+
+    def _sync_extension(self, manual: bool) -> None:
+        folder = self._ext_state.get("folder") or ""
+        if not folder or extension_sync.status(folder)[0] != "outdated":
+            self._refresh_extension_status()
+            return
+        try:
+            extension_sync.sync(Path(folder))
+        except (ValueError, OSError) as exc:  # the old manifest is still in place, so Chrome keeps the old extension
+            self._refresh_extension_status()
+            self._show_notice(f"Could not update the Chrome extension: {exc}", "warning")
+            return
+        self._refresh_extension_status()
+        self._show_notice(
+            f"The Chrome extension is now version {extension_sync.version_of(Path(folder))}. "
+            "It reloads itself within a few minutes (not while it is capturing).")
+
+    def _extension_housekeeping(self) -> None:
+        """A few seconds after start: bring the chosen extension folder up to date when that is switched on."""
+        if self._ext_state.get("auto") is not False and self._ext_state.get("folder"):
+            self._sync_extension(manual=False)
+
     # --- update check (gui/update_check.py) finds out and tells; "Update now" (gui/self_update.py) installs ---
 
     def _check_updates_clicked(self, _checked: bool = False) -> None:
@@ -1031,9 +1148,8 @@ class MainWindow(FluentWindow):
             self._show_restart_bar(version)
 
     def _show_restart_bar(self, version: str) -> None:
-        bar = InfoBar.success(
-            "Update ready", f"Version {version} is downloaded. Restart Live Subtitle to apply the update.",
-            parent=self, duration=-1)
+        # Keep the text short: a longer line made the bar wider than the 900 px window and cut "Restart now" off.
+        bar = InfoBar.success("Update ready", f"Version {version} is downloaded.", parent=self, duration=-1)
         button = PushButton("Restart now")
         button.clicked.connect(lambda: (bar.close(), self._restart_to_update(version)))
         bar.addWidget(button)
@@ -1060,6 +1176,82 @@ class MainWindow(FluentWindow):
         version = self_update.pending(install, self._app_version)
         if version:
             self._show_restart_bar(version)
+
+    def _refresh_speed_test_date(self) -> None:
+        text = "Choose a model pair for this computer, or test the speed of your saved setup."
+        date = last_test_date(self.config_path)
+        if date:
+            text += f" Last speed test: {date}"
+        self.setup_explainer.setText(text)
+
+    def _show_speed_test_notice(self) -> None:
+        bar = InfoBar.info("New: speed test", "Check which models suit this computer.",
+                           orient=QtCore.Qt.Orientation.Vertical, parent=self, duration=-1)
+        actions = QtWidgets.QWidget()
+        buttons = QtWidgets.QHBoxLayout(actions)
+        buttons.setContentsMargins(0, 0, 0, 0)
+        test = PushButton("Test speed")
+        test.clicked.connect(lambda: (bar.close(), self._run_speed_test()))
+        buttons.addWidget(test)
+        dismiss = PushButton("Not now")
+        dismiss.clicked.connect(bar.close)
+        buttons.addWidget(dismiss)
+        bar.addWidget(actions)
+        self._save_config_to_disk(updated=mark_setup_assistant_seen(self.config))
+
+    def _run_speed_test(self) -> None:
+        if self.gpu_pack_card.removing:
+            self._show_notice("Wait for the GPU speech pack removal before testing speed.", "warning")
+            return
+        if not self._resolve_unsaved_changes():
+            return
+        if self.local_models.busy:
+            self._show_notice("Wait for local model preparation to finish before testing speed.", "warning")
+            return
+        runner = self.backend_runner
+        was_running = runner is not None and runner.isRunning()
+        if was_running and fluent_kit.ask(
+            self, "Test speed", "The server stops during the test and starts again afterwards.",
+            QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel, QtWidgets.QMessageBox.Ok,
+        ) != QtWidgets.QMessageBox.Ok:
+            return
+
+        dialog = SpeedTestDialog(self.config_path, self._apply_speed_test_changes, self)
+        if was_running and self.backend_runner is runner and runner.isRunning():
+            self.restart_pending = False
+            runner.finished.connect(dialog.start)
+            self._stop_backend()
+            if not runner.isRunning():
+                QtCore.QTimer.singleShot(0, dialog.start)
+        else:
+            QtCore.QTimer.singleShot(0, dialog.start)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
+            self._refresh_speed_test_date()
+            if was_running and not self.force_close:
+                if self.backend_runner is runner:
+                    self.restart_pending = True
+                else:
+                    self._start_backend()
+
+    def _apply_speed_test_changes(self, changes: dict) -> bool:
+        previous = self.config
+        updated = self._collect_config_from_ui()
+        for key, value in changes.items():
+            section, field = key.split('.', 1)
+            updated.setdefault(section, {})[field] = value
+        if 'stt.model' in changes:
+            updated['stt'].pop('model_path', None)
+            updated['stt'].pop('model_dir', None)
+        if 'local_llama.model_id' in changes:
+            set_recommended_translation(updated, changes['local_llama.model_id'])
+        self._load_config_into_ui(updated)
+        if self._save_config_to_disk(updated=updated):
+            return True
+        self._load_config_into_ui(previous)
+        return False
 
     def _run_first_start_setup_assistant(self) -> None:
         applied = self._run_setup_assistant(first_run=True)
@@ -1316,6 +1508,11 @@ class MainWindow(FluentWindow):
             event.ignore()
             QtCore.QTimer.singleShot(500, self.close)
             return
+        if not self.gpu_pack_card.shutdown():
+            self.status_bar.showMessage("Waiting for the GPU speech pack operation to stop...")
+            event.ignore()
+            QtCore.QTimer.singleShot(500, self.close)
+            return
         self._stop_backend()
         if self.backend_runner and not self.backend_runner.wait(6000):
             event.ignore()
@@ -1482,12 +1679,21 @@ class MainWindow(FluentWindow):
         self._log_lines = (self._log_lines + [str(line)])[-200:]
         self._refresh_diagnostics()
 
+    def _on_backend_health(self, payload: dict) -> None:
+        text = speech_device_text(payload.get("stt_devices") or {})
+        self.speech_devices_status.setText(text)
+        self.speech_devices_status.setVisible(bool(text))
+        self.local_models.show_runtime_placement(payload.get("local_translation"))
+
     def _refresh_diagnostics(self) -> None:
         """Failure reason first, then the log tail. The box wraps and scrolls, so nothing is clipped."""
         parts = [self.last_backend_error or "", "\n".join(self._log_lines[-20:])]
         self.error_details.setPlainText("\n\n".join(part for part in parts if part))
 
     def _start_backend(self) -> None:
+        if self.gpu_pack_card.removing:
+            self._show_notice("Wait for the GPU speech pack removal before starting the server.", "warning")
+            return
         self.backend_failed = False
         self.last_backend_error = None
         try:
@@ -1507,6 +1713,7 @@ class MainWindow(FluentWindow):
             self._log_lines = []
             self.backend_runner.status.connect(self._on_runner_status)
             self.backend_runner.log.connect(self._on_runner_log)
+            self.backend_runner.health_changed.connect(self._on_backend_health)
             self.backend_runner.error.connect(self._on_backend_error)
             self.backend_runner.started.connect(lambda: self._set_status("Ready", "running"))
             self.backend_runner.stopped.connect(self._on_backend_stopped)
@@ -1537,6 +1744,7 @@ class MainWindow(FluentWindow):
         if self.backend_runner:
             self.backend_runner.deleteLater()
         self.backend_runner = None
+        self._on_backend_health({})
         if self.restart_pending:
             self._start_backend()
             self.restart_pending = False
@@ -1719,7 +1927,8 @@ class MainWindow(FluentWindow):
         self.config_revision = None
         return config_manager.load_config(self.config_path)
 
-    def _save_config_to_disk(self, *, updated: Dict[str, Any] | None = None, services_only: bool = False) -> bool:
+    def _save_config_to_disk(self, *, updated: Dict[str, Any] | None = None,
+                             services_only: bool = False, preserve_drafts: bool = False) -> bool:
         if updated is None:
             updated = self._collect_config_from_ui()
         try:
@@ -1743,6 +1952,8 @@ class MainWindow(FluentWindow):
             self._show_notice(f"Could not save settings: {exc}", "error")
             return False
         self.config = updated
+        if preserve_drafts:
+            return True
         self.service_catalog.mark_saved()
         if services_only:
             # Saving one service leaves a pending target language unsaved.
@@ -1790,7 +2001,7 @@ class MainWindow(FluentWindow):
     # Only fields edited on a page participate in its save or reset.
     PAGE_FIELDS = {
         0: {"server": ("host", "port")},
-        1: {"local_llama": ("context", "gpu_layers", "port", "model_id")},
+        1: {"local_llama": (*RUNTIME_DEFAULTS, "model_id")},
         2: {"stt": ("model", "language"), "translation": ("partial",)},
         3: {"subtitle": ("max_chars", "max_sentences_default", "max_sentences_cjk"),
             "stt": ("stall_timeout_sec",)},

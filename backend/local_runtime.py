@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import socket
@@ -231,6 +232,22 @@ class Hardware:
     name: str
     total_mb: int
     free_mb: int
+    vendor: str = ''  # 'nvidia', 'amd', 'intel', or '' when unknown / none
+
+
+VULKAN_VENDORS = {0x1002: 'amd', 0x8086: 'intel'}  # PCI vendor ids
+
+
+def uses_vulkan(hardware: Hardware) -> bool:
+    """AMD/Intel GPUs run the Vulkan llama.cpp build; speech recognition stays on the CPU."""
+
+    return hardware.vendor in VULKAN_VENDORS.values()
+
+
+def runtime_kind(gpu_layers: int, hardware: Hardware) -> str:
+    if int(gpu_layers) == 0:
+        return 'windows-cpu'
+    return 'windows-vulkan' if uses_vulkan(hardware) else 'windows-cuda'
 
 
 STT_VRAM_RESERVE_MB = {
@@ -252,10 +269,14 @@ def stt_vram_reserve_mb(stt: dict) -> int:
     )
 
 
-def auto_gpu_fit_target_mb(stt: dict) -> int:
-    """VRAM llama.cpp must leave available for Whisper and shared peaks."""
+def auto_gpu_fit_target_mb(stt: dict, hardware: Hardware | None = None) -> int:
+    """VRAM llama.cpp must leave available for Whisper and shared peaks.
 
-    return stt_vram_reserve_mb(stt) + SHARED_VRAM_HEADROOM_MB
+    Whisper has no GPU path on AMD/Intel, so a Vulkan GPU only keeps the shared headroom.
+    """
+
+    whisper = 0 if hardware is not None and uses_vulkan(hardware) else stt_vram_reserve_mb(stt)
+    return whisper + SHARED_VRAM_HEADROOM_MB
 
 
 def gpu_offload_args(settings: dict) -> list[str]:
@@ -269,6 +290,14 @@ def gpu_offload_args(settings: dict) -> list[str]:
     layers = int(settings.get('gpu_layers', -1))
     if not -1 <= layers <= 999:
         raise ValueError('Invalid GPU layer setting.')
+    device = settings.get('device')
+    if device is not None and not re.fullmatch(r'Vulkan\d{1,2}', str(device)):
+        raise ValueError('Invalid GPU device.')
+    pinned = ['--device', str(device)] if device and layers != 0 else []
+    return pinned + _layer_args(settings, layers)
+
+
+def _layer_args(settings: dict, layers: int) -> list[str]:
     if layers == -1:
         fit_target = int(
             settings.get(
@@ -286,6 +315,72 @@ def gpu_offload_args(settings: dict) -> list[str]:
     return ['--n-gpu-layers', str(layers), '--fit', 'off']
 
 
+BATCH_SIZES = (64, 128, 256, 512, 1024, 2048)
+
+
+def cpu_tuning_args(settings: dict) -> list[str]:
+    """llama-server CPU and batch flags; the defaults reproduce the historic fixed command line."""
+
+    threads = int(settings.get('threads', -1))
+    poll = int(settings.get('poll', 50))
+    priority = int(settings.get('priority', 0))
+    batch = int(settings.get('batch_size', 256))
+    if (not (threads == -1 or 1 <= threads <= 64) or poll not in (0, 50)
+            or priority not in (0, -1) or batch not in BATCH_SIZES):
+        raise ValueError('Invalid local runtime settings.')
+    args = ['--threads', str(threads), '--threads-batch', str(threads)] if threads != -1 else []
+    if poll == 0:
+        args += ['--poll', '0']
+    if priority == -1:
+        args += ['--prio', '-1']
+    return args + ['--batch-size', str(batch), '--ubatch-size', str(batch // 2)]
+
+
+# llama-server with every layer on the CPU still held ~253 MB of VRAM (CUDA context and
+# buffers) on an RTX 3080; whatever is above this is model weights on the GPU.
+VRAM_BASELINE_MB = 300
+# The Vulkan build held 67 MB with no layers on the GPU (RTX 3080, --device pinned).
+VULKAN_VRAM_BASELINE_MB = 100
+
+
+def process_vram_mb(pid: int) -> int | None:
+    """Dedicated VRAM of one process from the Windows "GPU Process Memory" counter, or None.
+
+    llama-server logs its layer placement only at debug verbosity, which also grows the log
+    ~4x per request, so the placement is read from the process's memory instead.
+    """
+
+    if os.name != 'nt':
+        return None
+    return _counter_mb(f'\\GPU Process Memory(pid_{int(pid)}_*)\\Dedicated Usage')
+
+
+def _counter_mb(path: str) -> int | None:
+    """Sum of a Windows GPU memory performance counter in MiB (works for every GPU vendor)."""
+
+    if os.name != 'nt':
+        return None
+    query = (f"(Get-Counter '{path}')"
+             ".CounterSamples | Measure-Object CookedValue -Sum | ForEach-Object Sum")
+    try:
+        result = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', query],
+                                capture_output=True, text=True, timeout=15,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        return round(float(result.stdout.strip()) / 1024 ** 2) if result.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def classify_placement(vram_mb: float, model_mb: float, baseline_mb: int = VRAM_BASELINE_MB) -> dict:
+    """Where the weights sit, judged by how much of the model file is resident in VRAM."""
+
+    # ponytail: VRAM heuristic, not a layer count; parse "offloaded N/M layers" if llama.cpp
+    # ever reports it at the default log level or through its API.
+    share = max(0.0, vram_mb - baseline_mb) / max(model_mb, 1.0)
+    state = 'gpu' if share >= 0.85 else 'cpu' if share <= 0.15 else 'partial'
+    return {'state': state, 'vram_mb': round(vram_mb)}
+
+
 def detect_hardware() -> Hardware:
     try:
         result = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total,memory.free',
@@ -295,7 +390,7 @@ def detect_hardware() -> Hardware:
         for line in result.stdout.splitlines():
             row = line.rsplit(',', 2)
             if len(row) == 3:
-                detected.append(Hardware(row[0].strip(), int(row[1]), int(row[2])))
+                detected.append(Hardware(row[0].strip(), int(row[1]), int(row[2]), 'nvidia'))
         if detected:
             # The managed CUDA runtime can use an NVIDIA GPU; recommend against
             # the card with the largest capacity and prefer current free memory
@@ -303,7 +398,93 @@ def detect_hardware() -> Hardware:
             return max(detected, key=lambda item: (item.total_mb, item.free_mb))
     except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
         pass
-    return Hardware('No supported NVIDIA GPU detected', 0, 0)
+    try:
+        adapters = _dxgi_adapters()
+    except Exception:  # a broken graphics driver must not stop the app; fall back to CPU
+        adapters = []
+    # Integrated GPUs (about 128 MiB dedicated memory) are not offered GPU translation.
+    # ponytail: integrated GPUs could use shared memory through Vulkan; add when tested.
+    usable = [item for item in adapters if item[1] in VULKAN_VENDORS and item[2] >= 1024]
+    if usable:
+        name, vendor_id, total, luid = max(usable, key=lambda item: item[2])
+        used = _counter_mb(f'\\GPU Adapter Memory({luid}_phys_*)\\Dedicated Usage')
+        # Without the counter assume it is all free; llama.cpp --fit still checks the real budget.
+        free = total if used is None else max(0, total - used)
+        return Hardware(name, total, free, VULKAN_VENDORS[vendor_id])
+    return Hardware('No supported GPU detected', 0, 0)
+
+
+def vulkan_device(executable: Path, gpu_name: str, run=subprocess.run) -> str | None:
+    """The llama.cpp Vulkan device id ("Vulkan1") of the detected GPU, matched by name.
+
+    Without --device the Vulkan build splits layers across every GPU it sees, including an
+    integrated one listed first (measured: Intel UHD 770 + RTX 3080 ran at 21 prompt tok/s).
+    """
+
+    try:
+        result = run([str(executable), '--list-devices'], capture_output=True, text=True,
+                     timeout=30, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in (result.stdout or '').splitlines():
+        found = re.match(r'\s*(Vulkan\d{1,2}): (.+?) \(\d+ MiB', line)
+        if found and found[2].strip().casefold() == gpu_name.strip().casefold():
+            return found[1]
+    return None
+
+
+def _dxgi_adapters() -> list[tuple[str, int, int, str]]:
+    """(name, PCI vendor id, dedicated MiB, counter LUID prefix) per hardware GPU, from DXGI."""
+
+    if os.name != 'nt':
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    class LUID(ctypes.Structure):
+        _fields_ = [('LowPart', wintypes.DWORD), ('HighPart', wintypes.LONG)]
+
+    class AdapterDesc1(ctypes.Structure):
+        _fields_ = [('Description', ctypes.c_wchar * 128), ('VendorId', wintypes.UINT),
+                    ('DeviceId', wintypes.UINT), ('SubSysId', wintypes.UINT),
+                    ('Revision', wintypes.UINT), ('DedicatedVideoMemory', ctypes.c_size_t),
+                    ('DedicatedSystemMemory', ctypes.c_size_t),
+                    ('SharedSystemMemory', ctypes.c_size_t), ('AdapterLuid', LUID),
+                    ('Flags', wintypes.UINT)]
+
+    class GUID(ctypes.Structure):
+        _fields_ = [('Data1', wintypes.DWORD), ('Data2', wintypes.WORD),
+                    ('Data3', wintypes.WORD), ('Data4', ctypes.c_ubyte * 8)]
+
+    def method(obj, index, *argtypes):
+        vtable = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        return ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)(vtable[index])
+
+    iid_factory1 = GUID(0x770AAE78, 0xF26F, 0x4DBA,
+                        (ctypes.c_ubyte * 8)(0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87))
+    factory = ctypes.c_void_p()
+    if ctypes.WinDLL('dxgi').CreateDXGIFactory1(ctypes.byref(iid_factory1), ctypes.byref(factory)):
+        return []
+    adapters = []
+    try:
+        for index in range(16):
+            adapter = ctypes.c_void_p()
+            # IDXGIFactory1::EnumAdapters1 (vtable 12) fails with DXGI_ERROR_NOT_FOUND at the end.
+            if method(factory, 12, wintypes.UINT, ctypes.c_void_p)(factory, index, ctypes.byref(adapter)):
+                break
+            desc = AdapterDesc1()
+            try:
+                ok = method(adapter, 10, ctypes.c_void_p)(adapter, ctypes.byref(desc)) == 0  # GetDesc1
+            finally:
+                method(adapter, 2)(adapter)  # Release
+            if ok and not desc.Flags & 2:  # skip DXGI_ADAPTER_FLAG_SOFTWARE
+                luid = (f'luid_0x{desc.AdapterLuid.HighPart & 0xFFFFFFFF:08x}'
+                        f'_0x{desc.AdapterLuid.LowPart:08x}')
+                adapters.append((desc.Description, desc.VendorId,
+                                 desc.DedicatedVideoMemory // 1024 ** 2, luid))
+    finally:
+        method(factory, 2)(factory)
+    return adapters
 
 
 def preflight(model: ModelSpec, hardware: Hardware, settings: dict, stt: dict) -> str:
@@ -312,24 +493,27 @@ def preflight(model: ModelSpec, hardware: Hardware, settings: dict, stt: dict) -
         return 'CPU translation selected. Real-time performance depends on your CPU.'
     if hardware.total_mb <= 0:
         raise RuntimeError(
-            'No supported NVIDIA GPU was detected. Select CPU (GPU layers = 0), '
+            'No supported GPU was detected. Select CPU (GPU layers = 0), '
             'or use an external translation service.'
         )
-    reserve = stt_vram_reserve_mb(stt)
-    shared_reserve = reserve + SHARED_VRAM_HEADROOM_MB
+    shared_reserve = auto_gpu_fit_target_mb(stt, hardware)
+    if uses_vulkan(hardware):
+        kept_for, smaller = 'shared buffers (speech recognition runs on the CPU)', ''
+    else:
+        kept_for, smaller = 'Whisper and shared buffers', 'choose a smaller Whisper model, '
 
     if gpu_layers == -1:
         if hardware.free_mb < shared_reserve:
             raise RuntimeError(
                 f'Automatic GPU offload needs to keep about {shared_reserve / 1024:.1f} GiB '
-                f'free for Whisper and shared buffers; {hardware.free_mb / 1024:.1f} GiB '
-                'is currently available. Close GPU-heavy applications, choose a smaller '
-                'Whisper model, or select CPU translation.'
+                f'free for {kept_for}; {hardware.free_mb / 1024:.1f} GiB '
+                f'is currently available. Close GPU-heavy applications, {smaller}'
+                'or select CPU translation.'
             )
         return (
             f'{hardware.name}: {hardware.free_mb / 1024:.1f} GiB free. '
             'Auto lets llama.cpp select the highest fitting GPU layer count while '
-            f'keeping {shared_reserve / 1024:.1f} GiB available for Whisper and shared buffers.'
+            f'keeping {shared_reserve / 1024:.1f} GiB available for {kept_for}.'
         )
     # The catalog estimate describes a full model offload. An explicit finite
     # --n-gpu-layers value is a partial offload whose actual VRAM use depends on
@@ -341,14 +525,14 @@ def preflight(model: ModelSpec, hardware: Hardware, settings: dict, stt: dict) -
         needed = shared_reserve
         if hardware.free_mb < needed:
             raise RuntimeError(
-                f'Whisper and shared buffers need about {needed / 1024:.1f} GiB free; '
+                f'Keeping {kept_for} free needs about {needed / 1024:.1f} GiB; '
                 f'{hardware.free_mb / 1024:.1f} GiB available. Reduce GPU layers, '
-                'choose a smaller Whisper model, or use CPU translation.'
+                f'{smaller}or use CPU translation.'
             )
         return (
             f'{hardware.name}: {hardware.free_mb / 1024:.1f} GiB free. '
             f'Partial translation offload: {gpu_layers} layer(s); '
-            f'{needed / 1024:.1f} GiB reserved for Whisper and shared buffers.'
+            f'{needed / 1024:.1f} GiB reserved for {kept_for}.'
         )
 
     raise ValueError('GPU layers must be Auto (-1), CPU (0), or a positive layer count.')
@@ -422,9 +606,7 @@ class ManagedRuntime:
             args = (command_prefix or [str(executable)]) + [
                 '--model', str(model_path), '--alias', model_id, '--host', '127.0.0.1', '--port', str(port),
                 '--ctx-size', str(context), '--parallel', '1',
-            ] + gpu_offload_args(settings) + [
-                '--batch-size', '256', '--ubatch-size', '128', '--api-key', self.token,
-            ]
+            ] + gpu_offload_args(settings) + cpu_tuning_args(settings) + ['--api-key', self.token]
             if settings.get('disable_thinking'):
                 args += ['--jinja', '--reasoning', 'off']
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -474,12 +656,22 @@ class ManagedRuntime:
                 content = payload['choices'][0]['message']['content']
                 if not isinstance(content, str) or not content.strip() or not self.alive():
                     raise RuntimeError('Local translation warmup did not produce text.')
+                warmup_ms = round((time.monotonic() - started) * 1000)
+                if layers == 0:
+                    placement = {'state': 'cpu', 'vram_mb': 0}
+                else:
+                    vram = process_vram_mb(self.process.pid)
+                    baseline = (VULKAN_VRAM_BASELINE_MB if settings.get('device')
+                                or Path(executable).parent.name == 'windows-vulkan' else VRAM_BASELINE_MB)
+                    placement = None if vram is None else classify_placement(
+                        vram, model_path.stat().st_size / 1024 ** 2, baseline)
                 return {
                     'base_url': self.base_url,
                     'api_key': self.token,
                     'model': model_id,
-                    'warmup_ms': round((time.monotonic() - started) * 1000),
+                    'warmup_ms': warmup_ms,
                     'gpu_layers': 'auto' if layers == -1 else layers,
+                    'placement': placement,
                     **(
                         {'gpu_fit_target_mb': int(settings['gpu_fit_target_mb'])}
                         if layers == -1 and settings.get('gpu_fit_target_mb') is not None

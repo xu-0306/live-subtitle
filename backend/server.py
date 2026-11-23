@@ -16,6 +16,7 @@ import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -225,6 +226,75 @@ def _patch_whisperlivekit_simulstreaming_evidence() -> None:
     AlignAtt.infer = _infer
     AlignAtt._live_subtitle_evidence_patch = True
 
+
+# Median-of-7 selection network (13 compare-swaps); the median ends at index 3.
+_MEDIAN7_NETWORK = ((0, 5), (0, 3), (1, 6), (2, 4), (0, 1), (3, 5), (2, 6),
+                    (2, 3), (3, 6), (4, 5), (1, 4), (1, 3), (3, 4))
+
+
+def _patch_whisperlivekit_median_filter() -> None:
+    """Speed up SimulStreaming's attention median filter when triton is missing.
+
+    Without triton (always the case in the packaged app) whisperlivekit sorts
+    every 7-wide window of a (1, heads, tokens, 1500) tensor: ~18 ms per decode
+    step on an RTX 3080, about a third of the step.  Elementwise min/max over
+    seven shifted views gives the same values in ~4 ms.
+    """
+
+    import importlib.util
+
+    if importlib.util.find_spec("triton") is not None:
+        return  # upstream's triton kernel is faster still
+    try:
+        import torch
+        import torch.nn.functional as F
+        from whisperlivekit.simul_whisper import simul_whisper
+    except Exception:
+        return
+    original = simul_whisper.median_filter
+    if getattr(original, "_live_subtitle_patch", False):
+        return
+
+    def median_filter(x, filter_width):
+        if filter_width != 7 or x.ndim != 4 or x.shape[-1] <= 3:
+            return original(x, filter_width)
+        x = F.pad(x, (3, 3, 0, 0), mode="reflect")
+        width = x.shape[-1] - 6
+        values = [x[..., i:i + width] for i in range(7)]
+        for a, b in _MEDIAN7_NETWORK:
+            values[a], values[b] = torch.minimum(values[a], values[b]), torch.maximum(values[a], values[b])
+        return values[3]
+
+    median_filter._live_subtitle_patch = True
+    simul_whisper.median_filter = median_filter
+
+
+def _patch_whisperlivekit_clean_cache() -> None:
+    """Drop the per-step ``torch.cuda.empty_cache()`` added in whisperlivekit 0.2.17.post1.
+
+    ``DecoderState.clean_cache`` runs after every decode step; flushing the CUDA
+    allocator there costs ~12 ms per step and the next step allocates the same
+    memory again.  Everything else post1 does is kept.
+    """
+
+    try:
+        from whisperlivekit.simul_whisper.decoder_state import DecoderState
+    except Exception:
+        return
+    code = getattr(DecoderState.clean_cache, "__code__", None)
+    if code is None or "empty_cache" not in code.co_names:
+        return  # other versions (or already patched): leave as is
+
+    # ponytail: copy of post1's clean_cache minus empty_cache; re-check on whisperlivekit upgrades.
+    def clean_cache(self):
+        self.kv_cache.clear()
+        if self.decoder_type == "beam" and self.inference is not None:
+            self.inference.kv_cache = {}
+            if self.token_decoder is not None:
+                self.token_decoder.reset()
+
+    DecoderState.clean_cache = clean_cache
+
 try:
     from . import model_manager
     from .cache import LRUCache
@@ -255,6 +325,8 @@ except ImportError:  # Fallback when running as a script.
 
 _patch_whisperlivekit_asrtoken()
 _patch_whisperlivekit_simulstreaming_evidence()
+_patch_whisperlivekit_median_filter()
+_patch_whisperlivekit_clean_cache()
 
 _STT_ENGINE_BUILD_LOCK = threading.Lock()
 
@@ -520,6 +592,26 @@ async def _construct_stt_engine(engine_kwargs: Dict[str, Any]):
     callback so a late-created engine is closed instead of becoming detached.
     """
 
+    def build_engine() -> Any:
+        engine = TranscriptionEngine(**engine_kwargs)
+        if engine_kwargs.get("backend_policy") == "simulstreaming":
+            encoder = getattr(getattr(engine, "asr", None), "fw_encoder", None)
+            if encoder is not None:
+                import torch
+
+                if not torch.cuda.is_available():
+                    import ctranslate2
+                    import numpy as np
+
+                    encode = encoder.encode
+
+                    def encode_on_host(mel):
+                        return np.asarray(encode(mel).to_device(ctranslate2.Device.cpu)).astype(np.float32)
+
+                    encoder.encode = encode_on_host
+                    logger.warning("SimulStreaming decoder runs on the CPU because torch CUDA is unavailable.")
+        return engine
+
     def build() -> Any:
         # whisperlivekit currently exposes a process-wide singleton engine;
         # retain the old serialized construction behavior after moving the
@@ -530,7 +622,7 @@ async def _construct_stt_engine(engine_kwargs: Dict[str, Any]):
                 engine_type, "_initialized"
             )
             if not has_singleton_state:
-                return engine_type(**engine_kwargs)
+                return build_engine()
             missing = object()
             previous_instance = getattr(engine_type, "_instance", missing)
             previous_initialized = getattr(engine_type, "_initialized", missing)
@@ -541,7 +633,7 @@ async def _construct_stt_engine(engine_kwargs: Dict[str, Any]):
                 # existing sessions retain their object references.
                 engine_type._instance = None
                 engine_type._initialized = False
-                return engine_type(**engine_kwargs)
+                return build_engine()
             except BaseException:
                 if previous_instance is not missing:
                     engine_type._instance = previous_instance
@@ -555,6 +647,25 @@ async def _construct_stt_engine(engine_kwargs: Dict[str, Any]):
     except asyncio.CancelledError:
         _watch_stt_task_for_cleanup(worker)
         raise
+
+
+def _stt_devices(engine: Any, policy: str) -> dict[str, str] | None:
+    asr = getattr(engine, "asr", None)
+    if policy == "simulstreaming":
+        model = getattr(asr, "shared_model", None)
+        decoder = getattr(model, "device", None)
+        encoder = getattr(asr, "fw_encoder", None)
+        if encoder is not None:
+            encoder = getattr(getattr(encoder, "model", None), "device", None)
+        elif not getattr(asr, "mlx_encoder", None):
+            encoder = decoder
+    else:
+        model = getattr(asr, "model", None)
+        encoder = decoder = getattr(getattr(model, "model", model), "device", None)
+    encoder, decoder = (str(device).partition(":")[0] for device in (encoder, decoder))
+    if encoder in {"cuda", "cpu"} and decoder in {"cuda", "cpu"}:
+        return {"encoder": encoder, "decoder": decoder}
+    return None
 
 
 async def _close_results_generator(results_generator) -> None:
@@ -2229,6 +2340,7 @@ async def lifespan(app: FastAPI):
     app.state.server_id = server_id
     app.state.instance_id = instance_id
     app.state.ready = False
+    app.state.stt_sessions = {}
     app.state.server_config = _get_server_config(cfg)
     stt_cfg = cfg.get("stt", {})
     translation_cfg = cfg.get("translation", {})
@@ -2325,15 +2437,45 @@ app.add_middleware(
 )
 
 
+@lru_cache(maxsize=1)
+def _torch_health() -> dict | None:
+    try:
+        import torch
+        from backend.gpu_pack import pack_root
+
+        return {
+            "version": str(torch.__version__),
+            "cuda": torch.version.cuda,
+            "cuda_available": torch.cuda.is_available(),
+            "pack": Path(torch.__file__).resolve().is_relative_to(pack_root().resolve()),
+        }
+    except Exception:
+        logger.debug("Could not inspect torch status", exc_info=True)
+        return None
+
+
 @app.get("/health")
 async def health_endpoint() -> Dict[str, Any]:
     """Lightweight backend readiness probe; never includes configuration."""
 
-    return {
+    payload = {
         "service": "stt-tts",
         "instance_id": str(getattr(app.state, "instance_id", "")),
         "ready": bool(getattr(app.state, "ready", False)),
     }
+    torch_health = _torch_health()
+    if torch_health is not None:
+        payload["torch"] = torch_health
+    for session in reversed(getattr(app.state, "stt_sessions", {}).values()):
+        devices = _stt_devices(session.engine, session.cfg.get("backend_policy", "localagreement"))
+        if devices is not None:
+            payload["stt_devices"] = devices
+            break
+    service = getattr(app.state, "translation_service", None)
+    result = getattr(service, "local_result", None)
+    if result is not None and service.runtime.alive():
+        payload["local_translation"] = {"placement": result.get("placement")}
+    return payload
 
 
 @app.get("/readiness")
@@ -2601,6 +2743,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await _safe_send(websocket, {'type': 'error', 'message': 'Capture startup failed; see backend log'})
         await websocket.close(code=1011)
     finally:
+        app.state.stt_sessions.pop(session_id, None)
         await app.state.translation_service.release(session_id)
 
 
@@ -2784,6 +2927,7 @@ async def _run_selected_session(websocket, stt_cfg, translation_cfg, pending_mes
         transcription_engine=stt_engine,
     )
     stt_session = SttSession(stt_cfg, stt_engine, audio_processor)
+    app.state.stt_sessions[websocket.state.translation_lease] = stt_session
     session = TranslationSession(
         translation_cfg,
         stt_session.default_language,

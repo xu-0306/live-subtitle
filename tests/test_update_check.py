@@ -269,9 +269,13 @@ def test_unreadable_manifest_means_unknown_version(tmp_path):
     assert uc.read_app_version(tmp_path / "odd.json") == ""
 
 
-def test_the_packaged_app_carries_the_manifest():
+def test_the_packaged_app_carries_the_extension_files_and_so_the_manifest():
+    # The manifest is the app's version source and, with the rest of the extension, what Settings > Chrome extension copies.
     spec = (ROOT / "live-subtitle.spec").read_text(encoding="utf-8")
-    assert re.search(r'\(str\(ROOT / "chrome-extension" / "manifest\.json"\), "chrome-extension"\)', spec)
+    assert 'extension_dir = ROOT / "chrome-extension"' in spec
+    assert 'extension_dir.rglob("*")' in spec and '{"tests", "__pycache__"}' in spec
+    assert "*extension_datas," in spec
+    assert (ROOT / "chrome-extension" / "manifest.json").is_file()
 
 
 def test_the_extension_asks_the_same_two_urls():

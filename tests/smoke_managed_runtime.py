@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.local_catalog import MODELS, get_model
-from backend.local_runtime import ManagedRuntime, detect_hardware, prepare_install, preflight
+from backend.local_runtime import ManagedRuntime, detect_hardware, prepare_install, preflight, runtime_kind, vulkan_device
 
 
 def main():
@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--download', action='store_true')
     parser.add_argument('--cpu', action='store_true')
+    parser.add_argument('--vulkan', action='store_true', help='force the Vulkan build (any GPU vendor)')
     parser.add_argument('--model-id', default=MODELS[0].id)
     args = parser.parse_args()
     args.root = args.root.resolve()
@@ -34,9 +35,15 @@ def main():
         if message != seen['message'] or now - seen['time'] >= 5:
             print(message, f'{done}/{total}' if total else '', flush=True)
             seen.update(message=message, time=now)
-    print(preflight(spec, detect_hardware(), settings, {'model': 'medium'}), flush=True)
-    executable, model = prepare_install(args.root, spec, 'windows-cpu' if args.cpu else 'windows-cuda',
+    hardware = detect_hardware()
+    print(preflight(spec, hardware, settings, {'model': 'medium'}), flush=True)
+    kind = 'windows-vulkan' if args.vulkan and not args.cpu else runtime_kind(settings['gpu_layers'], hardware)
+    print('runtime:', kind, flush=True)
+    executable, model = prepare_install(args.root, spec, kind,
                                         cancel, progress, allow_download=args.download)
+    if kind == 'windows-vulkan':
+        settings['device'] = vulkan_device(executable, hardware.name)
+        print('device:', settings['device'], flush=True)
     try:
         result = runtime.start(executable, model, spec.id, settings, cancel, args.root/'smoke-runtime.log', progress)
         result.pop('api_key', None)

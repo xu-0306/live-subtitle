@@ -25,10 +25,24 @@ from backend.local_runtime import (
     detect_hardware,
     preflight,
     prepare_install,
+    runtime_kind,
+    uses_vulkan,
 )
 from gui import config_manager
-from gui._local_model_form import build_form
+from gui._local_model_form import RUNTIME_DEFAULTS, build_form
 from gui.fluent_kit import FluentDialog, muted_label
+
+
+def runtime_placement_text(placement: dict | None) -> str:
+    if not placement:
+        return 'Placement unknown'
+    vram = f'{placement["vram_mb"] / 1024:.1f} GiB VRAM'
+    return {
+        'gpu': f'Running on GPU · {vram}',
+        'partial': f'Partly on GPU · {vram} · translation will be slower. '
+                   'Try a smaller model or free VRAM.',
+        'cpu': 'Running on CPU',
+    }.get(placement.get('state'), 'Placement unknown')
 
 
 def _pin_legacy_local_default(cfg: dict) -> None:
@@ -125,7 +139,7 @@ class InstallWorker(QtCore.QThread):
             except RuntimeError as exc:
                 self.hardware.emit(str(exc) + ' Download is allowed; capture checks memory again.')
                 self.hardware_warning.emit('GPU memory may be insufficient. Try a smaller model or CPU mode. Download can continue.')
-            kind = 'windows-cpu' if self.settings['gpu_layers'] == 0 else 'windows-cuda'
+            kind = runtime_kind(self.settings['gpu_layers'], hw)
             executable, model_path = prepare_install(self.root, model, kind, self.cancel_event,
                                                      self.progress.emit, allow_download=self.allow_download)
             if self.cancel_event.is_set():
@@ -160,7 +174,7 @@ class LocalModelController(QtCore.QObject):
         self.closing = False
         self._pending_result = None
         self._pending_error = ''
-        self.controls['hardware'].setText('Downloads do not load the GPU. Captures check the shared Whisper memory budget. Below 8 GB: use CPU or an external service.')
+        self.controls['hardware'].setText('Downloads do not load the GPU. Captures check the free GPU memory first. Too little: use CPU or an external service.')
         self.controls['add_model'].clicked.connect(self.add_model)
         self.controls['install'].clicked.connect(self.install)
         self.controls['cancel'].clicked.connect(self.cancel)
@@ -191,11 +205,17 @@ class LocalModelController(QtCore.QObject):
         )
         if configured_root:
             self.root = Path(configured_root).expanduser()
-        for key, default in [('context', 2048), ('gpu_layers', -1), ('port', 18080)]:
+        for key, default in RUNTIME_DEFAULTS.items():
+            control = self.controls[key]
             try:
-                self.controls[key].setValue(int(local.get(key, default)))
+                value = int(local.get(key, default))
             except (ValueError, TypeError):
-                self.controls[key].setValue(default)
+                value = default
+            if hasattr(control, 'setValue'):
+                control.setValue(value)
+            else:
+                index = control.findData(value)
+                control.setCurrentIndex(index if index >= 0 else control.findData(default))
         self._refresh_models(local.get('model_id', MODELS[0].id))
         index = self.controls['model'].findData(local.get('model_id', MODELS[0].id))
         if index >= 0:
@@ -214,6 +234,21 @@ class LocalModelController(QtCore.QObject):
         if not self.busy and not self.runtime.alive():
             self._details()
 
+    def show_runtime_placement(self, runtime: dict | None, prefix: str = '') -> None:
+        """Where the running model's weights sit; ``runtime`` is a start result or health entry."""
+        text = runtime_placement_text(runtime.get('placement')) if runtime is not None else ''
+        if text and prefix:
+            text = f'{prefix}{text}'
+        self.controls['placement'].setText(text)
+        self.controls['placement'].setVisible(bool(text))
+
+    def _runtime_settings(self) -> dict:
+        settings = {}
+        for key in RUNTIME_DEFAULTS:
+            control = self.controls[key]
+            settings[key] = control.value() if hasattr(control, 'value') else control.currentData()
+        return settings
+
     @property
     def busy(self) -> bool:
         return self.worker is not None
@@ -229,7 +264,7 @@ class LocalModelController(QtCore.QObject):
     def _details(self, *_args) -> None:
         model, available, published, _status, reason = self._selected_model_state()
         self.controls['stop'].setEnabled(not self.busy and available and published)
-        kind = 'windows-cpu' if self.controls['gpu_layers'].value() == 0 else 'windows-cuda'
+        kind = runtime_kind(self.controls['gpu_layers'].value(), self.detected_hardware)
         runtime_size = sum(a.size for a in RUNTIMES[kind])
         self.controls['details'].setText(
             f'<b>{html.escape(model.name)}</b> · {model.size / 1024**3:.2f} GiB download'
@@ -243,11 +278,15 @@ class LocalModelController(QtCore.QObject):
         gpu_layers = self.controls['gpu_layers'].value()
         stt = self.get_config().get('stt', {})
         if gpu_layers == -1:
-            fit_target = auto_gpu_fit_target_mb(stt)
+            fit_target = auto_gpu_fit_target_mb(stt, self.detected_hardware)
+            kept_for = (
+                'shared peaks; speech recognition runs on the CPU with this GPU (Vulkan)'
+                if uses_vulkan(self.detected_hardware)
+                else f'Whisper {stt.get("model", "medium")} and shared peaks'
+            )
             offload_summary = (
                 'Auto · llama.cpp chooses the highest fitting GPU layer count at each model load. '
-                f'It keeps about {fit_target / 1024:.1f} GiB free for Whisper '
-                f'{stt.get("model", "medium")} and shared peaks.'
+                f'It keeps about {fit_target / 1024:.1f} GiB free for {kept_for}.'
             )
         elif gpu_layers == 0:
             offload_summary = 'CPU · Translation does not offload model layers to the GPU.'
@@ -310,7 +349,7 @@ class LocalModelController(QtCore.QObject):
         if self.busy or self.runtime.alive() or self.closing:
             return
         self._pending_result, self._pending_error = None, ''
-        settings = {key: self.controls[key].value() for key in ('context', 'gpu_layers', 'port')}
+        settings = self._runtime_settings()
         settings['root'] = str(self.root)
         worker =InstallWorker(self.root, self.controls['model'].currentData(), settings,
                                self.get_config().get('stt', {}), self.runtime, allow_download, self.get_config())
@@ -359,6 +398,7 @@ class LocalModelController(QtCore.QObject):
                     'Downloaded. Refresh desktop services in the extension and choose this model. '
                     'It loads only during capture and unloads when the last capture stops.'
                 )
+                self.show_runtime_placement(result, 'Test load: ')
                 self.activated.emit(cfg)
             else:
                 self.runtime.stop()
@@ -428,7 +468,7 @@ class LocalModelController(QtCore.QObject):
             if cfg.get('translation', {}).get('engine') == 'managed_llama':
                 cfg['translation']['engine'] = 'noop'
                 cfg['translation'].pop('managed_llama', None)
-        local.update({key: self.controls[key].value() for key in ('context', 'gpu_layers', 'port')})
+        local.update(self._runtime_settings())
         local.update(root=str(self.root), model_id=self.controls['model'].currentData())
         return cfg
 

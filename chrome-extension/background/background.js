@@ -1,4 +1,4 @@
-importScripts("../shared/connection-settings.js", "../shared/update-check.js");
+importScripts("../shared/connection-settings.js", "../shared/update-check.js", "../shared/files-update.js");
 
 const OFFSCREEN_URL = chrome.runtime.getURL("offscreen/offscreen.html");
 const tabStatus = new Map();
@@ -60,6 +60,42 @@ chrome.alarms?.onAlarm?.addListener((alarm) => {
 });
 chrome.runtime.onStartup?.addListener(() => checkForUpdate());
 chrome.runtime.onInstalled?.addListener(() => checkForUpdate());
+
+// Files update (shared/files-update.js): the desktop app can overwrite this folder with a newer copy of the
+// extension. Reload once the manifest on disk names a newer version, but never in the middle of a capture.
+const FilesUpdate = globalThis.STTFilesUpdate;
+
+async function isCaptureBusy() {
+  if (startingTabs.size || Array.from(tabStatus.values()).some((item) => item.running)) return true;
+  return (await getActiveCaptureTabIds()).length > 0;
+}
+
+async function reloadIfFilesUpdated() {
+  if (!FilesUpdate || !Updates || !chrome.runtime.reload) return;
+  try {
+    const { action } = await FilesUpdate.decide({
+      fetchImpl: globalThis.fetch,
+      manifestUrl: chrome.runtime.getURL("manifest.json"),
+      runningVersion: chrome.runtime.getManifest().version,
+      isNewer: Updates.isNewer,
+      isBusy: isCaptureBusy,
+    });
+    if (action === "reload") chrome.runtime.reload();
+  } catch (err) {
+    console.warn("[background] Extension files check failed:", err?.message || err);
+  }
+}
+
+if (FilesUpdate && chrome.runtime.reload && chrome.alarms?.get) {
+  chrome.alarms.get(FilesUpdate.ALARM, (alarm) => {
+    if (chrome.runtime.lastError || alarm) return;
+    chrome.alarms.create(FilesUpdate.ALARM, { delayInMinutes: 1, periodInMinutes: FilesUpdate.ALARM_PERIOD_MINUTES });
+  });
+}
+chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (FilesUpdate && alarm?.name === FilesUpdate.ALARM) reloadIfFilesUpdated();
+});
+reloadIfFilesUpdated(); // every time the worker wakes: a popup, a capture or the alarm
 
 async function ensureContentScript(tabId) {
   if (!tabId) return false;

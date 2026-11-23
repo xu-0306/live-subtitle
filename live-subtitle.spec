@@ -27,13 +27,21 @@ ffmpeg_exe = os.environ.get("LIVE_SUBTITLE_FFMPEG") or shutil.which("ffmpeg")
 if not ffmpeg_exe or not Path(ffmpeg_exe).is_file():
     raise SystemExit("ffmpeg.exe not found: put it on PATH or set LIVE_SUBTITLE_FFMPEG before building.")
 
+# The extension's files (not its tests) ride along: Settings > Chrome extension (gui/extension_sync.py) copies them
+# into the folder Chrome loaded, and manifest.json is also the app's version source for gui/update_check.py.
+extension_dir = ROOT / "chrome-extension"
+extension_datas = [
+    (str(path), str(Path("chrome-extension") / path.relative_to(extension_dir).parent))
+    for path in sorted(extension_dir.rglob("*"))
+    if path.is_file() and not {"tests", "__pycache__"} & set(path.relative_to(extension_dir).parts)
+]
+
 datas = [
     (ffmpeg_exe, "ffmpeg"),
     (str(ROOT / "ffmpeg-NOTICE.txt"), "ffmpeg"),
     (str(ROOT / "backend" / "config.yaml"), "backend"),
     (str(ROOT / "backend" / "local_models.json"), "backend"),
-    # The app's version number lives only here; gui/update_check.py reads it for the update check.
-    (str(ROOT / "chrome-extension" / "manifest.json"), "chrome-extension"),
+    *extension_datas,
     *whisper_datas,
     *copy_metadata("whisperlivekit"),
 ]
@@ -47,6 +55,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
+    # Keep bundled torch out of the PYZ so an external CUDA wheel takes precedence.
+    module_collection_mode={"torch": "py", "functorch": "py", "torchgen": "py"},
     excludes=[
         "IPython",
         "jupyter",
@@ -54,6 +64,7 @@ a = Analysis(
         "notebook",
         "pytest",
         "tensorflow",
+        "torchaudio",
         "torch._dynamo",
         "torch._inductor",
     ],

@@ -10,6 +10,7 @@ import pytest
 
 from backend import translation_service as ts
 from backend.local_catalog import MODELS, list_models, resolve_hf_model
+from backend.local_runtime import Hardware
 from backend.translator import OpenAITranslator, _build_translation_prompt
 
 
@@ -113,7 +114,7 @@ def test_auto_gpu_mode_passes_stt_aware_fit_target_to_runtime(tmp_path, monkeypa
     cfg['stt'] = {'model': 'base'}
     runtime = FakeRuntime()
     monkeypatch.setattr(ts, 'preflight', lambda *a: None)
-    monkeypatch.setattr(ts, 'detect_hardware', lambda: object())
+    monkeypatch.setattr(ts, 'detect_hardware', lambda: Hardware('RTX', 10240, 9000, 'nvidia'))
     monkeypatch.setattr(
         ts,
         'prepare_install',

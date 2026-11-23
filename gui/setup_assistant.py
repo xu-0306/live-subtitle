@@ -13,11 +13,12 @@ from backend.local_runtime import (
     Hardware,
     SHARED_VRAM_HEADROOM_MB,
     STT_VRAM_RESERVE_MB,
+    uses_vulkan,
 )
 from gui.fluent_kit import FluentDialog, make_card
 
 
-SETUP_ASSISTANT_VERSION = 1
+SETUP_ASSISTANT_VERSION = 2
 
 @dataclass(frozen=True)
 class ModelRecommendation:
@@ -58,7 +59,11 @@ def recommendations_for_hardware(hardware: Hardware) -> list[ModelRecommendation
     assistant after closing that program can expose a larger recommendation.
     """
 
-    if hardware.total_mb < 8 * 1024:
+    if uses_vulkan(hardware) and hardware.total_mb >= 4 * 1024:
+        vulkan = _vulkan_recommendations(hardware)
+        if vulkan:
+            return vulkan
+    if uses_vulkan(hardware) or hardware.total_mb < 8 * 1024:
         translation = get_model("qwen25-1.5b-q4")
         return [
             ModelRecommendation(
@@ -68,7 +73,8 @@ def recommendations_for_hardware(hardware: Hardware) -> list[ModelRecommendation
                 gpu_layers=0,
                 estimated_vram_mb=STT_VRAM_RESERVE_MB["base"],
                 rationale=(
-                    "A supported NVIDIA GPU with at least 8 GiB was not found. "
+                    "No GPU with enough memory for local translation was found (NVIDIA needs "
+                    "8 GiB, AMD or Intel 4 GiB free). "
                     "Whisper Base keeps speech recognition lighter and local translation "
                     "runs on the CPU. Translation speed will depend on the processor; an "
                     "external translation service remains the faster fallback."
@@ -162,6 +168,42 @@ def recommendations_for_hardware(hardware: Hardware) -> list[ModelRecommendation
     return selected
 
 
+def _vulkan_recommendations(hardware: Hardware) -> list[ModelRecommendation]:
+    """AMD/Intel: the GPU holds only translation; Whisper has no GPU path there and uses the CPU."""
+
+    capacity = int(hardware.total_mb * 0.85)
+    if hardware.free_mb > 0:
+        capacity = min(capacity, int(hardware.free_mb * 0.90))
+    translation_ids = list(dict.fromkeys(pair[2] for pair in _GPU_PAIRS))
+    fitting = [
+        (model_id, get_model(model_id).estimated_vram_mb + SHARED_VRAM_HEADROOM_MB)
+        for model_id in translation_ids
+        if get_model(model_id).estimated_vram_mb + SHARED_VRAM_HEADROOM_MB <= capacity
+    ]
+    if not fitting:
+        return []
+    chosen = fitting[-1:] + fitting[-2:-1]
+    choices = [
+        ModelRecommendation(
+            title=("Local translation on this GPU (recommended)" if index == 0
+                   else "Faster local translation on this GPU"),
+            stt_model="base",
+            translation_model_id=model_id,
+            gpu_layers=-1,
+            estimated_vram_mb=needed,
+            rationale=(
+                f"Translation uses about {needed / 1024:.1f} GiB of GPU memory through "
+                "llama.cpp Vulkan, including 1 GiB of headroom. Speech recognition runs on "
+                "the CPU with this GPU, so Whisper Base keeps it light. This is a sizing "
+                "estimate, not a latency benchmark."
+            ),
+            recommended=index == 0,
+        )
+        for index, (model_id, needed) in enumerate(chosen)
+    ]
+    return choices + recommendations_for_hardware(Hardware(hardware.name, 0, 0))[1:]
+
+
 def apply_recommendation(
     config: Mapping[str, Any], recommendation: ModelRecommendation
 ) -> dict[str, Any]:
@@ -177,20 +219,7 @@ def apply_recommendation(
 
     translation = updated.setdefault("translation", {})
     if recommendation.translation_model_id:
-        local["model_id"] = recommendation.translation_model_id
-        installed = set(local.get("installed_models") or [])
-        if recommendation.translation_model_id in installed:
-            translation["default_selection"] = {
-                "kind": "local",
-                "id": recommendation.translation_model_id,
-            }
-            local.pop("pending_default_model_id", None)
-        else:
-            # Do not publish an unavailable default to the extension. The
-            # local-model controller promotes this selection only after the
-            # download has passed its size/hash checks.
-            local["pending_default_model_id"] = recommendation.translation_model_id
-            translation["default_selection"] = {"kind": "none", "id": "none"}
+        set_recommended_translation(updated, recommendation.translation_model_id)
     else:
         local.pop("pending_default_model_id", None)
         translation["default_selection"] = {"kind": "none", "id": "none"}
@@ -198,6 +227,19 @@ def apply_recommendation(
     gui = updated.setdefault("gui", {})
     gui["setup_assistant_version"] = SETUP_ASSISTANT_VERSION
     return updated
+
+
+def set_recommended_translation(config: dict, model_id: str) -> None:
+    local = config.setdefault("local_llama", {})
+    translation = config.setdefault("translation", {})
+    local["model_id"] = model_id
+    local["enabled"] = False
+    if model_id in (local.get("installed_models") or []):
+        translation["default_selection"] = {"kind": "local", "id": model_id}
+        local.pop("pending_default_model_id", None)
+    else:
+        local["pending_default_model_id"] = model_id
+        translation["default_selection"] = {"kind": "none", "id": "none"}
 
 
 def mark_setup_assistant_seen(config: Mapping[str, Any]) -> dict[str, Any]:

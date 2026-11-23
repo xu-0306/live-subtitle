@@ -21,6 +21,8 @@ from .local_runtime import (
     detect_hardware,
     preflight,
     prepare_install,
+    runtime_kind,
+    vulkan_device,
 )
 from .model_manager import (
     WHISPER_MODEL_URLS,
@@ -135,6 +137,25 @@ def _default_translation_selection(config: dict) -> dict | None:
             if profile.get("engine") == engine:
                 return {"kind": "profile", "id": str(profile.get("id"))}
     return None
+
+
+def start_local_runtime(runtime, root: Path, config: dict, cfg: dict, local_id: str,
+                        stt: dict, cancel: threading.Event) -> dict:
+    """Start the managed llama-server like a capture does (shared with the speed test)."""
+    settings = dict(config.get('local_llama', {}))
+    model = get_model(local_id, config)
+    settings['disable_thinking'] = model.disable_thinking
+    settings['target_language'] = cfg['target_language']
+    hardware = detect_hardware()
+    preflight(model, hardware, settings, stt)
+    if int(settings.get('gpu_layers', -1)) == -1:
+        settings['gpu_fit_target_mb'] = auto_gpu_fit_target_mb(stt, hardware)
+    kind = runtime_kind(settings.get('gpu_layers', -1), hardware)
+    exe, weights = prepare_install(root, model, kind, cancel, lambda *a: None, allow_download=False)
+    if kind == 'windows-vulkan':
+        # ponytail: no name match leaves llama.cpp's own device choice (may split across GPUs).
+        settings['device'] = vulkan_device(exe, hardware.name)
+    return runtime.start(exe, weights, model.id, settings, cancel, root / 'runtime.log', lambda *a: None)
 
 
 def resolve_selection(config: dict, update: dict | None) -> tuple[dict, str | None]:
@@ -498,22 +519,9 @@ class TranslationService:
                 raise ValueError('Stop this capture before changing translation services.')
             if local_id:
                 if self.local_result is None:
-                    settings = dict(config.get('local_llama', {}))
-                    model = get_model(local_id, config)
-                    settings['disable_thinking'] = model.disable_thinking
-                    settings['target_language'] = cfg['target_language']
                     cancel = threading.Event()
-                    def start():
-                        hardware = detect_hardware()
-                        preflight(model, hardware, settings, stt)
-                        if int(settings.get('gpu_layers', -1)) == -1:
-                            settings['gpu_fit_target_mb'] = auto_gpu_fit_target_mb(stt)
-                        kind = 'windows-cpu' if settings.get('gpu_layers') == 0 else 'windows-cuda'
-                        exe, weights = prepare_install(self.root, model, kind, cancel, lambda *a: None,
-                                                       allow_download=False)
-                        return self.runtime.start(exe, weights, model.id, settings, cancel,
-                                                  self.root / 'runtime.log', lambda *a: None)
-                    task = asyncio.create_task(asyncio.to_thread(start))
+                    task = asyncio.create_task(asyncio.to_thread(
+                        start_local_runtime, self.runtime, self.root, config, cfg, local_id, stt, cancel))
                     try:
                         self.local_result = await asyncio.shield(task)
                     except BaseException:

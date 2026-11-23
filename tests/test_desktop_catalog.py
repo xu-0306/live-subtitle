@@ -72,10 +72,13 @@ def test_management_websocket_returns_v2_catalog_and_health_identity(tmp_path: P
     save_config(config_path, _config(model_dir))
     monkeypatch.setenv("STT_CONFIG_PATH", str(config_path))
     monkeypatch.setenv("STT_INSTANCE_ID", "test-instance")
+    torch_health = {"version": "2.10.0+cpu", "cuda": None, "cuda_available": False, "pack": False}
+    monkeypatch.setattr(server, "_torch_health", lambda: torch_health)
 
     with TestClient(server.app, client=("127.0.0.1", 55101)) as client:
         health = client.get("/health").json()
-        assert health == {"service": "stt-tts", "instance_id": "test-instance", "ready": True}
+        assert health == {"service": "stt-tts", "instance_id": "test-instance", "ready": True,
+                          "torch": torch_health}
         with client.websocket_connect("/asr") as websocket:
             websocket.send_json({"type": "desktop_catalog", "version": 2})
             catalog = websocket.receive_json()

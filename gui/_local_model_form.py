@@ -29,6 +29,11 @@ from qfluentwidgets import (
     SpinBox,
 )
 
+RUNTIME_DEFAULTS = {
+    'context': 2048, 'gpu_layers': -1, 'port': 18080,
+    'threads': -1, 'poll': 50, 'priority': 0, 'batch_size': 256,
+}
+
 def _form(layout: QVBoxLayout) -> QFormLayout:
     form = QFormLayout()
     form.setHorizontalSpacing(14)
@@ -135,6 +140,11 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     status.setObjectName("localModelStatus")
     status.setWordWrap(True)
     status.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    placement = BodyLabel()
+    placement.setObjectName("localModelPlacement")
+    placement.setTextFormat(Qt.TextFormat.PlainText)
+    placement.setWordWrap(True)
+    placement.hide()
 
     advanced = make_card("Advanced")
     advanced_grid = QGridLayout()
@@ -183,6 +193,33 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     advanced_grid.addWidget(BodyLabel("Loopback port"), 3, 0)
     advanced_grid.addWidget(port, 3, 1, Qt.AlignLeft)
 
+    fields = (
+        ('threads', 'CPU threads', [('Auto', -1), *((str(count), count) for count in range(1, 65))],
+         'Auto suits most PCs; fewer threads leave CPU for speech recognition'),
+        ('poll', 'Wait mode', [('Responsive (polling)', 50), ('Low CPU', 0)],
+         'Low CPU stops llama.cpp from spinning while idle'),
+        ('priority', 'Priority', [('Normal', 0), ('Low', -1)],
+         'Low lets speech recognition win when the CPU is busy'),
+        ('batch_size', 'Batch size', [(str(size), size) for size in (64, 128, 256, 512, 1024, 2048)],
+         'Larger is faster for long prompts, uses more VRAM'),
+    )
+    cpu_controls = {}
+    for row, (key, title, choices, description) in enumerate(fields, 4):
+        control = ElidedComboBox()
+        control.setObjectName(key)
+        control.setFixedWidth(160)
+        for text, value in choices:
+            control.addItem(text, userData=value)
+        control.setCurrentIndex(control.findData(RUNTIME_DEFAULTS[key]))
+        label = BodyLabel(title)
+        control.setAccessibleName(title)
+        hint = muted_label(f'{description}. Applies the next time the model starts.', small=True)
+        hint.setObjectName(f'{key}_hint')
+        advanced_grid.addWidget(label, row, 0)
+        advanced_grid.addWidget(control, row, 1, Qt.AlignLeft)
+        advanced_grid.addWidget(hint, row, 2)
+        cpu_controls[key] = control
+
     overview_layout.addWidget(details)
     overview_layout.addWidget(hardware_warning)
     overview_layout.addWidget(info_toggle, 0, Qt.AlignLeft)
@@ -190,6 +227,7 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
     model_group.layout().addLayout(actions)
     model_group.layout().addWidget(progress)
     model_group.layout().addWidget(status)
+    model_group.layout().addWidget(placement)
     layout.addWidget(overview)
     layout.addWidget(model_group)
     layout.addWidget(advanced)
@@ -210,9 +248,11 @@ def build_form(parent: QWidget, models: list[dict]) -> dict[str, QWidget]:
         "stop": stop,
         "progress": progress,
         "status": status,
+        "placement": placement,
         "advanced": advanced,
         "context": context,
         "gpu_layers": gpu_layers,
         "gpu_layers_summary": gpu_layers_summary,
         "port": port,
+        **cpu_controls,
     }

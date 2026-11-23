@@ -53,6 +53,7 @@ class BackendRunner(QtCore.QThread):
     status = QtCore.Signal(str)
     started = QtCore.Signal()
     ready = QtCore.Signal(object)
+    health_changed = QtCore.Signal(object)
     stopped = QtCore.Signal()
     error = QtCore.Signal(str)
     log = QtCore.Signal(str)
@@ -251,6 +252,7 @@ class BackendRunner(QtCore.QThread):
                     ready_emitted = True
                     self.status.emit("Ready")
                     self.ready.emit(payload)
+                    self.health_changed.emit(payload)
                     self.started.emit()
                     break
                 if time.monotonic() >= deadline:
@@ -261,12 +263,20 @@ class BackendRunner(QtCore.QThread):
             if self._stop_event.is_set() or not ready_emitted:
                 self._terminate_process(wait=True)
             else:
+                next_health_check = time.monotonic() + 1
                 while not self._stop_event.is_set():
                     exit_code = process.poll()
                     if exit_code is not None:
                         if exit_code != 0:
                             self.error.emit(f"Backend stopped unexpectedly (exit code {exit_code})")
                         break
+                    if time.monotonic() >= next_health_check:
+                        payload = self._health_probe(health_url, self._instance_id)
+                        if (not self._stop_event.is_set() and process.poll() is None
+                                and self._is_ready(payload) and payload != self.health_payload):
+                            self.health_payload = payload
+                            self.health_changed.emit(payload)
+                        next_health_check = time.monotonic() + 1
                     self._stop_event.wait(0.1)
                 if self._stop_event.is_set():
                     self._terminate_process(wait=True)

@@ -43,11 +43,32 @@ def _restore_backend_stdio() -> None:
 
 def main() -> None:
     if "--backend" in sys.argv:
+        from backend.gpu_pack import activate
+
+        activate()
         sys.argv.remove("--backend")
         _restore_backend_stdio()
         from backend.server import main as backend_main
 
         backend_main()
+        return
+
+    if "--benchmark" in sys.argv:
+        from backend.gpu_pack import activate
+
+        activate()
+        sys.argv.remove("--benchmark")
+        _restore_backend_stdio()
+        from backend.benchmark import main as benchmark_main
+
+        benchmark_main()
+        return
+
+    if "--gpu-pack-check" in sys.argv:
+        _restore_backend_stdio()
+        from backend.gpu_pack import check_main
+
+        check_main()
         return
 
     if "--smoke-test-gui" in sys.argv:

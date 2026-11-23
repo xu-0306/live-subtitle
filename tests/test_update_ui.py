@@ -338,6 +338,7 @@ def test_later_keeps_the_update_and_a_bar_restarts_it(window, packaged):
     assert packaged.apply == []
     (bar,) = window.findChildren(InfoBar)
     assert bar.titleLabel.text() == "Update ready" and "99.0.0" in bar.contentLabel.text()
+    assert bar.sizeHint().width() <= window.width() - 100  # a wider bar pushed "Restart now" past the window edge
     next(b for b in bar.findChildren(QtWidgets.QPushButton) if b.text() == "Restart now").click()
     assert packaged.apply == [(packaged.install, "99.0.0")]
 

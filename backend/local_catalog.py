@@ -59,6 +59,11 @@ RUNTIMES = {
         _release('cudart-llama-bin-win-cuda-12.4-x64.zip', 391443627,
                  '8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6'),
     ),
+    # AMD and Intel GPUs (also runs on NVIDIA); speech recognition stays on the CPU there.
+    'windows-vulkan': (
+        _release('llama-b10919-bin-win-vulkan-x64.zip', 31674930,
+                 '318500010bbd20b781e9523a78ae496fa64b4f5bf3d892cb2b124a5193076303'),
+    ),
 }
 
 
