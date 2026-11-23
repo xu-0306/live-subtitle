@@ -172,7 +172,23 @@ def _latencies(values):
     return dict(n=len(ordered), p50_ms=percentile(0.5), p95_ms=percentile(0.95))
 
 
-def _run_stt(engine, audio, seconds, *, realtime=True):
+def _progress_reporter(callback, total, start):
+    last = start
+
+    def report(done, now, *, final=False):
+        nonlocal last
+        if not final and now - last < 1:
+            return
+        last = now
+        try:
+            callback(done, total)
+        except Exception:
+            pass
+
+    return report
+
+
+def _run_stt(engine, audio, seconds, *, realtime=True, progress=None):
     from whisperlivekit.core import online_factory
 
     processor = online_factory(engine.args, engine.asr)
@@ -181,6 +197,7 @@ def _run_stt(engine, audio, seconds, *, realtime=True):
     latencies = []
     recognized = False
     start = time.perf_counter()
+    report = _progress_reporter(progress, seconds, start) if progress is not None else None
     position = 0
     while position < total:
         next_chunk = min(total, position + step)
@@ -194,12 +211,20 @@ def _run_stt(engine, audio, seconds, *, realtime=True):
         position = arrived
         started = time.perf_counter()
         tokens, _ = processor.process_iter()
-        latencies.append(time.perf_counter() - started)
+        finished = time.perf_counter()
+        latencies.append(finished - started)
         recognized = recognized or bool(tokens)
+        if report is not None and position < total:
+            report(position / RATE, finished)
     if realtime and not recognized:
+        if report is not None:
+            report(seconds, time.perf_counter(), final=True)
         raise RuntimeError('Speech recognition returned no words. Check the diagnostic log.')
-    return {**_latencies(latencies), 'rtf': round(sum(latencies) / seconds, 3),
-            'end_lag_s': round(max(0, time.perf_counter() - start - seconds), 3)}
+    stats = {**_latencies(latencies), 'rtf': round(sum(latencies) / seconds, 3),
+             'end_lag_s': round(max(0, time.perf_counter() - start - seconds), 3)}
+    if report is not None:
+        report(seconds, time.perf_counter(), final=True)
+    return stats
 
 
 def _translate(client, model, source, target, text):
@@ -216,9 +241,11 @@ def _translate(client, model, source, target, text):
     return elapsed, (response.json().get('timings') or {}).get('predicted_per_second')
 
 
-def _run_translation(one, sentences, seconds, *, interval=0, stop=None):
+def _run_translation(one, sentences, seconds, *, interval=0, stop=None, progress=None):
     stop = stop or threading.Event()
-    deadline = time.perf_counter() + seconds
+    start = time.perf_counter()
+    deadline = start + seconds
+    report = _progress_reporter(progress, seconds, start) if progress is not None else None
     latencies, rates = [], []
     errors = 0
     index = 0
@@ -235,6 +262,13 @@ def _run_translation(one, sentences, seconds, *, interval=0, stop=None):
         index += 1
         if interval or errors:
             stop.wait(max(0, started + (interval or 0.1) - time.perf_counter()))
+        if report is not None:
+            now = time.perf_counter()
+            if now < deadline and not stop.is_set():
+                report(now - start, now)
+    if report is not None:
+        now = time.perf_counter()
+        report(min(seconds, now - start), now, final=True)
     return {**_latencies(latencies), 'tok_per_s': round(mean(rates), 1) if rates else None, 'errors': errors}
 
 
@@ -249,6 +283,17 @@ def _sample_vram(stop, samples):
         except (OSError, subprocess.SubprocessError):
             return
         stop.wait(0.5)
+
+
+def _stage_progress(progress, step, label, seconds, *, unit='s', device=None):
+    def update(done, total):
+        details = dict(done=done, total=total)
+        if device is not None:
+            details['device'] = device
+        progress(step, f'{label}: {int(done)} of {total} {unit}', **details)
+
+    update(0, seconds)
+    return update
 
 
 def _measure(config_path, result, progress):
@@ -279,11 +324,11 @@ def _measure(config_path, result, progress):
     with tempfile.TemporaryDirectory(prefix='live-subtitle-speed-') as folder:
         language, audio = _speech(Path(folder) / 'speech.wav')
 
-    progress('stt_load', 'Loading and warming up speech recognition')
+    model = stt['model']
+    progress('stt_load', f'Loading Whisper {model}')
     os.environ['HF_HUB_OFFLINE'] = '1'
     from . import server
 
-    model = stt['model']
     reference = stt.get('model_path') or stt.get('model_dir')
     target = Path(reference) if reference else model_manager.resolve_stt_model_target(stt)
     if stt.get('backend') == 'openai-api':
@@ -298,10 +343,18 @@ def _measure(config_path, result, progress):
     except FileNotFoundError as exc:
         raise RuntimeError(f'Whisper {model} could not load. Download it on the Speech recognition page: {exc}') from exc
     result['stt_devices'] = server._stt_devices(engine, result['policy'])
-    _run_stt(engine, audio, 8, realtime=False)
+    devices = set((result['stt_devices'] or {}).values())
+    device = next(iter(devices)) if len(devices) == 1 else None
+    warmup_label = 'Warming up speech recognition'
+    if device is not None:
+        warmup_label += ' on the CPU' if device == 'cpu' else ' on the GPU'
+    elif devices:
+        warmup_label += ' on the CPU and GPU'
+    warmup_progress = _stage_progress(progress, 'stt_warmup', warmup_label, 8, unit='s of audio', device=device)
+    _run_stt(engine, audio, 8, realtime=False, progress=warmup_progress)
 
-    progress('stt', 'Measuring speech recognition')
-    result['stt'] = _run_stt(engine, audio, 30)
+    stt_progress = _stage_progress(progress, 'stt', 'Measuring speech recognition', 30, device=device)
+    result['stt'] = _run_stt(engine, audio, 30, progress=stt_progress)
     if not local_id:
         return
 
@@ -322,10 +375,12 @@ def _measure(config_path, result, progress):
             one = partial(_translate, client, local_id, language, cfg_t['target_language'])
             sentences = SENTENCES[language]
             one(sentences[0])
-            progress('translation', 'Measuring translation')
-            result['translation'] = _run_translation(one, sentences, 15)
+            translation_progress = _stage_progress(progress, 'translation', 'Measuring translation', 15)
+            result['translation'] = _run_translation(one, sentences, 15, progress=translation_progress)
 
-            progress('together', 'Measuring speech recognition and translation together')
+            together_progress = _stage_progress(progress, 'together',
+                                                'Measuring speech recognition and translation together',
+                                                30, device=device)
             samples, translated = [], {}
 
             def translate_together():
@@ -336,7 +391,7 @@ def _measure(config_path, result, progress):
             sampler.start()
             translator.start()
             try:
-                speech = _run_stt(engine, audio, 30)
+                speech = _run_stt(engine, audio, 30, progress=together_progress)
             finally:
                 stop.set()
                 translator.join()
@@ -369,7 +424,8 @@ def main() -> None:
         try:
             with redirect_stdout(sys.stderr):
                 try:
-                    _measure(args.config, result, lambda step, label: emit('PROGRESS', dict(step=step, label=label)))
+                    _measure(args.config, result,
+                             lambda step, label, **details: emit('PROGRESS', dict(step=step, label=label, **details)))
                 except Exception as exc:
                     traceback.print_exc()
                     result['error'] = str(exc) or type(exc).__name__

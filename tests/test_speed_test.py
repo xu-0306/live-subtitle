@@ -281,3 +281,114 @@ def test_notice_fits_the_window_and_is_stored_at_once(app, tmp_path):
     saved = config_manager.load_config(path)
     assert saved['gui']['setup_assistant_version'] == SETUP_ASSISTANT_VERSION
     win.close()
+
+
+# --- progress feedback (a CPU warm-up took minutes with one static label) ---
+
+def _fake_stt(monkeypatch, clock_step=0.25):
+    import types
+    processor = types.SimpleNamespace(insert_audio_chunk=lambda *a: None, process_iter=lambda: (['word'], None))
+    monkeypatch.setitem(sys.modules, 'whisperlivekit.core',
+                        types.SimpleNamespace(online_factory=lambda args, asr: processor))
+    now = [0.0]
+
+    def clock():
+        now[0] += clock_step
+        return now[0]
+    monkeypatch.setattr(benchmark.time, 'perf_counter', clock)
+    return types.SimpleNamespace(args=types.SimpleNamespace(min_chunk_size=0.1), asr=None)
+
+
+def test_stt_progress_is_throttled_increasing_and_ends_at_the_total(monkeypatch):
+    engine = _fake_stt(monkeypatch)
+    calls = []
+    stats = benchmark._run_stt(engine, [0.0] * (8 * benchmark.RATE), 8, realtime=False,
+                               progress=lambda done, total: calls.append((done, total)))
+    assert stats['rtf'] > 0
+    assert calls[-1] == (8, 8)
+    assert all(total == 8 for _done, total in calls)
+    dones = [done for done, _total in calls]
+    assert dones == sorted(dones) and len(set(dones)) == len(dones)
+    assert 3 <= len(calls) < 80  # 80 chunks of 0.1 s; one update per chunk would flood the dialog
+
+
+def test_a_failing_progress_callback_does_not_stop_measuring(monkeypatch):
+    engine = _fake_stt(monkeypatch)
+
+    def broken(done, total):
+        raise RuntimeError('dialog went away')
+    assert benchmark._run_stt(engine, [0.0] * (2 * benchmark.RATE), 2, realtime=False, progress=broken)['rtf'] > 0
+    calls = []
+    out = benchmark._run_translation(lambda text: (0.01, 100.0), ['a'], 0.5, interval=0.1,
+                                     progress=lambda done, total: calls.append((done, total)))
+    assert out['errors'] == 0 and calls[-1][1] == 0.5 and calls[-1][0] <= 0.5
+
+
+def test_stage_labels_say_how_far_along_and_where_it_runs():
+    seen = []
+    update = benchmark._stage_progress(lambda step, label, **details: seen.append((step, label, details)),
+                                       'stt_warmup', 'Warming up speech recognition on the CPU', 8,
+                                       unit='s of audio', device='cpu')
+    update(3.7, 8)
+    assert seen[0] == ('stt_warmup', 'Warming up speech recognition on the CPU: 0 of 8 s of audio',
+                       {'done': 0, 'total': 8, 'device': 'cpu'})
+    assert seen[1][1] == 'Warming up speech recognition on the CPU: 3 of 8 s of audio'
+
+
+def test_dialog_shows_live_progress_elapsed_time_and_the_cpu_hint(app, tmp_path):
+    from gui.speed_test import SpeedTestDialog
+    payload = {**result(stt_devices={'encoder': 'cpu', 'decoder': 'cpu'}), 'version': 1}
+    lines = [
+        {'step': 'stt_load', 'label': 'Loading Whisper small'},
+        {'step': 'stt_warmup', 'label': 'Warming up speech recognition on the CPU: 3 of 8 s of audio',
+         'done': 3, 'total': 8, 'device': 'cpu'},
+    ]
+    script = ('import json,sys,time\n'
+              + ''.join(f'print("PROGRESS "+json.dumps({line!r}),flush=True)\n' for line in lines)
+              + 'time.sleep(6)\n'
+              + f'print("RESULT "+json.dumps({payload!r}),flush=True)\n')
+    parent = QtWidgets.QWidget()
+    parent.resize(900, 700)
+    dialog = SpeedTestDialog(tmp_path / 'config.yaml', lambda changes: True, parent)
+    dialog.process.setArguments(['-c', script])
+    finished = QtCore.QEventLoop()
+    dialog.process.finished.connect(finished.quit)
+    dialog.start()
+    import re
+    import time
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and not (dialog.status.text().startswith('Warming up')
+                                               and dialog.elapsed.text() != 'Elapsed 0:00'):
+        app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100)
+    try:
+        assert dialog.status.text() == 'Warming up speech recognition on the CPU: 3 of 8 s of audio'
+        assert not dialog.cpu_hint.isHidden() and 'GPU speech pack' in dialog.cpu_hint.text()
+        assert not dialog.step_progress.isHidden() and dialog.step_progress.value() == 38
+        assert dialog.busy.isHidden()
+        assert re.fullmatch(r'Elapsed 0:0[1-5]', dialog.elapsed.text())
+        if dialog.process.state() != QtCore.QProcess.ProcessState.NotRunning:
+            QtCore.QTimer.singleShot(30000, finished.quit)
+            finished.exec()
+        app.processEvents()
+        assert dialog.status.text() == 'Speed test complete'
+        assert dialog.cpu_hint.isHidden() and dialog.elapsed.isHidden() and dialog.step_progress.isHidden()
+        assert 'Speech recognition: CPU' in '\n'.join(texts(dialog))
+    finally:
+        dialog.done(0)
+        parent.deleteLater()
+
+
+def test_cpu_hint_never_shows_for_the_gpu(app, tmp_path):
+    from gui.speed_test import SpeedTestDialog
+    parent = QtWidgets.QWidget()
+    dialog = SpeedTestDialog(tmp_path / 'config.yaml', lambda changes: True, parent)
+    dialog._show_progress({'step': 'stt', 'label': 'Measuring speech recognition: 5 of 30 s',
+                           'done': 5, 'total': 30, 'device': 'cuda'})
+    assert dialog.cpu_hint.isHidden()
+    dialog._show_progress({'step': 'translation', 'label': 'Measuring translation: 1 of 15 s',
+                           'done': 1, 'total': 15, 'device': 'cpu'})
+    assert dialog.cpu_hint.isHidden()  # the hint is about speech recognition only
+    dialog._show_progress({'step': 'stt_load', 'label': 'Loading Whisper small'})
+    assert not dialog.busy.isHidden() and dialog.step_progress.isHidden()
+    dialog.done(0)
+    parent.deleteLater()

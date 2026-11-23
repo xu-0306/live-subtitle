@@ -6,11 +6,13 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
-from qfluentwidgets import BodyLabel, IndeterminateProgressBar, PlainTextEdit, PushButton, ScrollArea, SubtitleLabel
+from qfluentwidgets import (
+    BodyLabel, IndeterminateProgressBar, PlainTextEdit, ProgressBar, PushButton, ScrollArea, SubtitleLabel,
+)
 
 from backend.benchmark import verdict
 from gui.backend_runner import sanitize_log_line
-from gui.fluent_kit import FluentDialog
+from gui.fluent_kit import FluentDialog, muted_label
 from gui.local_model_controller import runtime_placement_text
 
 
@@ -54,6 +56,21 @@ class SpeedTestDialog(FluentDialog):
         self.status = self._label('Preparing the speed test')
         self.busy = IndeterminateProgressBar(self.widget)
         self.viewLayout.addWidget(self.busy)
+        self.step_progress = ProgressBar(self.widget, useAni=False)
+        self.viewLayout.addWidget(self.step_progress)
+        self.step_progress.hide()
+        self.elapsed = muted_label('Elapsed 0:00', small=True)
+        self.viewLayout.addWidget(self.elapsed)
+        self.cpu_hint = muted_label(
+            'Speech recognition runs on the CPU, so this can take several minutes. '
+            'The GPU speech pack on the Speech recognition page makes it faster.', small=True,
+        )
+        self.viewLayout.addWidget(self.cpu_hint)
+        self.cpu_hint.hide()
+        self._elapsed_clock = QtCore.QElapsedTimer()
+        self._elapsed_timer = QtCore.QTimer(self)
+        self._elapsed_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
+        self._elapsed_timer.timeout.connect(self._update_elapsed)
         self.close_button = self.set_buttons([('Cancel', False, self.reject)])['Cancel']
 
         self.process = QtCore.QProcess(self)
@@ -69,10 +86,14 @@ class SpeedTestDialog(FluentDialog):
     def start(self) -> None:
         if not self._closed and not self._started:
             self._started = True
+            self._elapsed_clock.start()
+            self._elapsed_timer.start(1000)
             self.process.start()
 
     def done(self, result: int) -> None:
         self._closed = True
+        self._elapsed_timer.stop()
+        self.busy.stop()
         if self.process.state() != QtCore.QProcess.ProcessState.NotRunning:
             self.process.kill()
             self.process.waitForFinished(3000)
@@ -84,6 +105,25 @@ class SpeedTestDialog(FluentDialog):
         label.setWordWrap(True)
         (layout if layout is not None else self.viewLayout).addWidget(label)
         return label
+
+    def _update_elapsed(self) -> None:
+        minutes, seconds = divmod(self._elapsed_clock.elapsed() // 1000, 60)
+        self.elapsed.setText(f'Elapsed {minutes}:{seconds:02d}')
+
+    def _show_progress(self, payload: dict) -> None:
+        self.status.setText(str(payload.get('label') or 'Testing speed'))
+        done, total = payload.get('done'), payload.get('total')
+        determinate = (type(done) in (int, float) and type(total) in (int, float)
+                       and total > 0 and 0 <= done <= total < float('inf'))
+        if determinate:
+            self.busy.stop()
+            self.step_progress.setValue(round(100 * (done / total)))
+        elif not self.busy.isStarted():
+            self.busy.start()
+        self.busy.setVisible(not determinate)
+        self.step_progress.setVisible(determinate)
+        self.cpu_hint.setVisible(payload.get('device') == 'cpu'
+                                 and payload.get('step') in ('stt_warmup', 'stt', 'together'))
 
     def _read_stdout(self) -> None:
         self._stdout += bytes(self.process.readAllStandardOutput())
@@ -100,7 +140,7 @@ class SpeedTestDialog(FluentDialog):
             if not isinstance(payload, dict):
                 continue
             if prefix == b'PROGRESS':
-                self.status.setText(str(payload.get('label') or 'Testing speed'))
+                self._show_progress(payload)
             elif payload.get('version') == 1:
                 self._result = payload
 
@@ -123,7 +163,12 @@ class SpeedTestDialog(FluentDialog):
         self._show_result(result, error)
 
     def _show_result(self, result: dict, error: str | None) -> None:
+        self._elapsed_timer.stop()
+        self.elapsed.hide()
+        self.cpu_hint.hide()
+        self.busy.stop()
         self.busy.hide()
+        self.step_progress.hide()
         self.status.setText(sanitize_log_line(error) if error else 'Speed test complete')
         self.close_button.setText('Close')
         details = QtWidgets.QWidget()
